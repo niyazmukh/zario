@@ -1,4 +1,4 @@
-package com.example.zario.data.local
+package com.niyaz.zario.data.local
 
 import android.content.Context
 import androidx.room.Database

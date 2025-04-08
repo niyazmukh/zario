@@ -1,4 +1,4 @@
-package com.example.zario // Or com.example.zario.model
+package com.niyaz.zario // Or com.niyaz.zario.model
 
 enum class StudyPhase {
     /** User has registered but study hasn't formally started (e.g., waiting for conditions). */

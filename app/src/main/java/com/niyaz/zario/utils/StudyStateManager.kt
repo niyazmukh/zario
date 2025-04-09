@@ -64,13 +64,29 @@ object StudyStateManager {
         return getPreferences(context).getLong(KEY_STUDY_START_TIMESTAMP, 0L)
     }
 
-    // --- TODO: Add Getters/Setters for other state keys as needed ---
-    // Example: Target App
-    fun saveTargetApp(context: Context, packageName: String) {
+    // --- Target App --- (Existing functions remain)
+    fun saveTargetApp(context: Context, packageName: String?) { // Allow nullable to clear
         getPreferences(context).edit().putString(KEY_TARGET_APP, packageName).apply()
+        Log.d("StudyStateManager", "Saved Target App: $packageName")
     }
     fun getTargetApp(context: Context): String? {
         return getPreferences(context).getString(KEY_TARGET_APP, null)
+    }
+
+    // --- Daily Goal ---
+    fun saveDailyGoalMs(context: Context, goalMs: Long?) { // Allow nullable to clear
+        val editor = getPreferences(context).edit()
+        if (goalMs != null) {
+            editor.putLong(KEY_DAILY_GOAL_MS, goalMs)
+        } else {
+            editor.remove(KEY_DAILY_GOAL_MS)
+        }
+        editor.apply()
+        Log.d("StudyStateManager", "Saved Daily Goal (ms): $goalMs")
+    }
+    fun getDailyGoalMs(context: Context): Long? {
+        val goal = getPreferences(context).getLong(KEY_DAILY_GOAL_MS, -1L) // Use -1 to indicate not set
+        return if (goal == -1L) null else goal
     }
 
     // Example: Condition (Save as String for clarity)

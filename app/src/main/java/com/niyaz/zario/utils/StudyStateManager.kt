@@ -1,35 +1,41 @@
-package com.niyaz.zario.utils // Updated package
+package com.niyaz.zario.utils
 
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
-import com.google.firebase.firestore.FirebaseFirestore // Import Firestore
-import com.google.firebase.firestore.ktx.firestore // Import KTX
-import com.google.firebase.ktx.Firebase // Import KTX
-import com.niyaz.zario.StudyPhase // Updated package
-import kotlinx.coroutines.tasks.await // Import await() for suspending Task
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.ktx.firestore
+import com.google.firebase.ktx.Firebase
+import com.niyaz.zario.StudyPhase
+import kotlinx.coroutines.tasks.await
 
 object StudyStateManager {
 
-    private const val PREFS_NAME = "ZarioStudyStatePrefs"
-    private const val KEY_STUDY_PHASE = "study_phase"
-    private const val KEY_STUDY_START_TIMESTAMP = "study_start_timestamp"
-    // Add keys for other state info as needed (e.g., target app, goal, condition)
-    private const val KEY_CONDITION = "study_condition"
-    private const val KEY_TARGET_APP = "target_app_package"
-    private const val KEY_DAILY_GOAL_MS = "daily_goal_ms"
-    private const val KEY_POINTS_BALANCE = "points_balance"
-    // Keys for Flexible Deposit stakes
-    private const val KEY_FLEX_POINTS_EARN = "flex_points_earn"
-    private const val KEY_FLEX_POINTS_LOSE = "flex_points_lose"
-    private const val KEY_USER_ID = "user_id" // Add key for user ID
+    // Use constants for keys
+    private const val PREFS_NAME = Constants.PREFS_NAME // Keep local if only used here, or reference Constants
+    private const val KEY_STUDY_PHASE = Constants.KEY_STUDY_PHASE
+    private const val KEY_STUDY_START_TIMESTAMP = Constants.KEY_STUDY_START_TIMESTAMP
+    private const val KEY_CONDITION = Constants.KEY_CONDITION
+    private const val KEY_TARGET_APP = Constants.KEY_TARGET_APP
+    private const val KEY_DAILY_GOAL_MS = Constants.KEY_DAILY_GOAL_MS
+    private const val KEY_POINTS_BALANCE = Constants.KEY_POINTS_BALANCE
+    private const val KEY_FLEX_POINTS_EARN = Constants.KEY_FLEX_POINTS_EARN
+    private const val KEY_FLEX_POINTS_LOSE = Constants.KEY_FLEX_POINTS_LOSE
+    private const val KEY_USER_ID = Constants.KEY_USER_ID
+    private const val KEY_LAST_DAILY_CHECK_TIMESTAMP = Constants.KEY_LAST_DAILY_CHECK_TIMESTAMP
+    private const val KEY_LAST_DAY_GOAL_REACHED = Constants.KEY_LAST_DAY_GOAL_REACHED
+    private const val KEY_LAST_DAY_POINTS_CHANGE = Constants.KEY_LAST_DAY_POINTS_CHANGE
 
+    private const val TAG = "StudyStateManager" // Add TAG
 
     private fun getPreferences(context: Context): SharedPreferences {
-        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        // Use constant for prefs name
+        return context.getSharedPreferences(Constants.PREFS_NAME, Context.MODE_PRIVATE)
     }
 
-    // --- User ID --- (Useful to store locally)
+    // --- Methods using Keys ---
+    // (No logic change, just ensure keys used above are from Constants)
+
     fun saveUserId(context: Context, userId: String) {
         getPreferences(context).edit().putString(KEY_USER_ID, userId).apply()
     }
@@ -37,10 +43,9 @@ object StudyStateManager {
         return getPreferences(context).getString(KEY_USER_ID, null)
     }
 
-    // --- Study Phase ---
     fun saveStudyPhase(context: Context, phase: StudyPhase) {
         getPreferences(context).edit().putString(KEY_STUDY_PHASE, phase.name).apply()
-        Log.d("StudyStateManager", "Saved Study Phase: ${phase.name}")
+        Log.d(TAG, "Saved Study Phase: ${phase.name}")
     }
 
     fun getStudyPhase(context: Context): StudyPhase {
@@ -48,33 +53,29 @@ object StudyStateManager {
         return try {
             StudyPhase.valueOf(phaseName ?: StudyPhase.REGISTERED.name)
         } catch (e: IllegalArgumentException) {
-            Log.e("StudyStateManager", "Invalid phase name '$phaseName' found in prefs, defaulting to REGISTERED.")
-            StudyPhase.REGISTERED // Default to REGISTERED if saved value is invalid
+            Log.e(TAG, "Invalid phase name '$phaseName' found in prefs, defaulting to REGISTERED.")
+            StudyPhase.REGISTERED
         }
     }
 
-    // --- Study Start Timestamp ---
     fun saveStudyStartTimestamp(context: Context, timestamp: Long) {
         getPreferences(context).edit().putLong(KEY_STUDY_START_TIMESTAMP, timestamp).apply()
-        Log.d("StudyStateManager", "Saved Study Start Timestamp: $timestamp")
+        Log.d(TAG, "Saved Study Start Timestamp: $timestamp")
     }
 
     fun getStudyStartTimestamp(context: Context): Long {
-        // Return 0 or -1 if not set, indicating baseline hasn't started properly
         return getPreferences(context).getLong(KEY_STUDY_START_TIMESTAMP, 0L)
     }
 
-    // --- Target App --- (Existing functions remain)
-    fun saveTargetApp(context: Context, packageName: String?) { // Allow nullable to clear
+    fun saveTargetApp(context: Context, packageName: String?) {
         getPreferences(context).edit().putString(KEY_TARGET_APP, packageName).apply()
-        Log.d("StudyStateManager", "Saved Target App: $packageName")
+        Log.d(TAG, "Saved Target App: $packageName")
     }
     fun getTargetApp(context: Context): String? {
         return getPreferences(context).getString(KEY_TARGET_APP, null)
     }
 
-    // --- Daily Goal ---
-    fun saveDailyGoalMs(context: Context, goalMs: Long?) { // Allow nullable to clear
+    fun saveDailyGoalMs(context: Context, goalMs: Long?) {
         val editor = getPreferences(context).edit()
         if (goalMs != null) {
             editor.putLong(KEY_DAILY_GOAL_MS, goalMs)
@@ -82,20 +83,18 @@ object StudyStateManager {
             editor.remove(KEY_DAILY_GOAL_MS)
         }
         editor.apply()
-        Log.d("StudyStateManager", "Saved Daily Goal (ms): $goalMs")
+        Log.d(TAG, "Saved Daily Goal (ms): $goalMs")
     }
     fun getDailyGoalMs(context: Context): Long? {
-        val goal = getPreferences(context).getLong(KEY_DAILY_GOAL_MS, -1L) // Use -1 to indicate not set
+        val goal = getPreferences(context).getLong(KEY_DAILY_GOAL_MS, -1L)
         return if (goal == -1L) null else goal
     }
 
-    // Example: Condition (Save as String for clarity)
     fun saveCondition(context: Context, condition: StudyPhase) {
-        // Only save valid intervention phases
         if(condition in listOf(StudyPhase.INTERVENTION_CONTROL, StudyPhase.INTERVENTION_DEPOSIT, StudyPhase.INTERVENTION_FLEXIBLE)){
             getPreferences(context).edit().putString(KEY_CONDITION, condition.name).apply()
         } else {
-            Log.w("StudyStateManager", "Attempted to save invalid condition: $condition")
+            Log.w(TAG, "Attempted to save invalid condition: $condition")
         }
     }
     fun getCondition(context: Context): StudyPhase? {
@@ -105,17 +104,14 @@ object StudyStateManager {
         } catch (e: IllegalArgumentException) { null }
     }
 
-    // Example: Points Balance
     fun savePointsBalance(context: Context, points: Int) {
         getPreferences(context).edit().putInt(KEY_POINTS_BALANCE, points).apply()
     }
     fun getPointsBalance(context: Context): Int {
-        // Default to initial endowment (PRD) if not set
-        return getPreferences(context).getInt(KEY_POINTS_BALANCE, 1200)
+        // Use constant for default value
+        return getPreferences(context).getInt(KEY_POINTS_BALANCE, Constants.INITIAL_POINTS)
     }
 
-
-    // --- Flexible Stakes --- (Add Save/Get functions if needed)
     fun saveFlexStakes(context: Context, earn: Int, lose: Int) {
         getPreferences(context).edit()
             .putInt(KEY_FLEX_POINTS_EARN, earn)
@@ -124,70 +120,77 @@ object StudyStateManager {
     }
     fun getFlexStakes(context: Context): Pair<Int?, Int?> {
         val prefs = getPreferences(context)
-        val earn = if (prefs.contains(KEY_FLEX_POINTS_EARN)) prefs.getInt(KEY_FLEX_POINTS_EARN, 0) else null
-        val lose = if (prefs.contains(KEY_FLEX_POINTS_LOSE)) prefs.getInt(KEY_FLEX_POINTS_LOSE, 0) else null
+        // Use Constants for defaults/range check if needed, though currently returning null if not present
+        val earn = if (prefs.contains(KEY_FLEX_POINTS_EARN)) prefs.getInt(KEY_FLEX_POINTS_EARN, Constants.FLEX_STAKES_MIN_EARN) else null
+        val lose = if (prefs.contains(KEY_FLEX_POINTS_LOSE)) prefs.getInt(KEY_FLEX_POINTS_LOSE, Constants.FLEX_STAKES_MIN_LOSE) else null
         return Pair(earn, lose)
     }
 
-    /**
-     * Fetches user study data from Firestore and saves it to local SharedPreferences.
-     * Should be called after successful login. Runs suspend function for await().
-     *
-     * @param context The application context.
-     * @param userId The logged-in user's Firebase UID.
-     * @return True if data was fetched and saved successfully, false otherwise.
-     */
+    fun saveDailyOutcome(context: Context, checkTimestamp: Long, goalReached: Boolean, pointsChange: Int) {
+        getPreferences(context).edit()
+            .putLong(KEY_LAST_DAILY_CHECK_TIMESTAMP, checkTimestamp)
+            .putBoolean(KEY_LAST_DAY_GOAL_REACHED, goalReached)
+            .putInt(KEY_LAST_DAY_POINTS_CHANGE, pointsChange)
+            .apply()
+        Log.d(TAG, "Saved Daily Outcome: Time=$checkTimestamp, Reached=$goalReached, Change=$pointsChange")
+    }
+
+    fun getLastDailyOutcome(context: Context): Triple<Long?, Boolean?, Int?> {
+        val prefs = getPreferences(context)
+        val timestamp = if(prefs.contains(KEY_LAST_DAILY_CHECK_TIMESTAMP)) prefs.getLong(KEY_LAST_DAILY_CHECK_TIMESTAMP, 0L) else null
+        val reached = if(prefs.contains(KEY_LAST_DAY_GOAL_REACHED)) prefs.getBoolean(KEY_LAST_DAY_GOAL_REACHED, false) else null
+        val change = if(prefs.contains(KEY_LAST_DAY_POINTS_CHANGE)) prefs.getInt(KEY_LAST_DAY_POINTS_CHANGE, 0) else null
+        return Triple(timestamp, reached, change)
+    }
+
     suspend fun fetchAndSaveStateFromFirestore(context: Context, userId: String): Boolean {
-        Log.d("StudyStateManager", "Attempting to fetch state for user: $userId")
+        Log.d(TAG, "Attempting to fetch state for user: $userId")
         val firestore: FirebaseFirestore = Firebase.firestore
-        val userDocRef = firestore.collection("users").document(userId)
+        // Use constant for collection name
+        val userDocRef = firestore.collection(Constants.FIRESTORE_COLLECTION_USERS).document(userId)
 
         return try {
-            val document = userDocRef.get().await() // Use await() for suspend function
+            val document = userDocRef.get().await()
             if (document != null && document.exists()) {
-                Log.d("StudyStateManager", "Firestore document found. Data: ${document.data}")
+                Log.d(TAG, "Firestore document found. Data: ${document.data}")
                 val editor = getPreferences(context).edit()
 
-                // Save user ID locally
                 editor.putString(KEY_USER_ID, userId)
 
-                // Extract and save each field, handling potential nulls or type issues
-                val phaseName = document.getString("studyPhase")
+                // Use Constants for Firestore fields
+                val phaseName = document.getString(Constants.FIRESTORE_FIELD_STUDY_PHASE)
                 try {
                     val phase = phaseName?.let { StudyPhase.valueOf(it) } ?: StudyPhase.REGISTERED
                     editor.putString(KEY_STUDY_PHASE, phase.name)
                 } catch (e: IllegalArgumentException) {
-                    Log.e("StudyStateManager", "Invalid phase '$phaseName' in Firestore, defaulting.")
+                    Log.e(TAG, "Invalid phase '$phaseName' in Firestore, defaulting.")
                     editor.putString(KEY_STUDY_PHASE, StudyPhase.REGISTERED.name)
                 }
 
-                document.getLong("studyStartTimestamp")?.let { editor.putLong(KEY_STUDY_START_TIMESTAMP, it) }
-                document.getString("studyCondition")?.let { editor.putString(KEY_CONDITION, it) } // Save condition name
-                document.getLong("pointsBalance")?.let { editor.putInt(KEY_POINTS_BALANCE, it.toInt()) } // Firestore stores Long, Prefs Int
-                document.getString("targetAppPackage")?.let { editor.putString(KEY_TARGET_APP, it) }
-                document.getLong("dailyGoalMs")?.let { editor.putLong(KEY_DAILY_GOAL_MS, it) }
-                document.getLong("flexPointsEarn")?.let { editor.putInt(KEY_FLEX_POINTS_EARN, it.toInt()) }
-                document.getLong("flexPointsLose")?.let { editor.putInt(KEY_FLEX_POINTS_LOSE, it.toInt()) }
+                document.getLong(Constants.FIRESTORE_FIELD_STUDY_START_TIMESTAMP)?.let { editor.putLong(KEY_STUDY_START_TIMESTAMP, it) }
+                document.getString(Constants.FIRESTORE_FIELD_STUDY_CONDITION)?.let { editor.putString(KEY_CONDITION, it) }
+                document.getLong(Constants.FIRESTORE_FIELD_POINTS_BALANCE)?.let { editor.putInt(KEY_POINTS_BALANCE, it.toInt()) }
+                document.getString(Constants.FIRESTORE_FIELD_TARGET_APP)?.let { editor.putString(KEY_TARGET_APP, it) }
+                document.getLong(Constants.FIRESTORE_FIELD_DAILY_GOAL)?.let { editor.putLong(KEY_DAILY_GOAL_MS, it) }
+                document.getLong(Constants.FIRESTORE_FIELD_FLEX_EARN)?.let { editor.putInt(KEY_FLEX_POINTS_EARN, it.toInt()) }
+                document.getLong(Constants.FIRESTORE_FIELD_FLEX_LOSE)?.let { editor.putInt(KEY_FLEX_POINTS_LOSE, it.toInt()) }
 
-                editor.apply() // Apply all changes
-                Log.i("StudyStateManager", "Successfully fetched and saved state from Firestore.")
+                editor.apply()
+                Log.i(TAG, "Successfully fetched and saved state from Firestore.")
                 true
             } else {
-                Log.w("StudyStateManager", "Firestore document not found for user: $userId")
-                // Decide how to handle: Clear local state? Keep local state? Default state?
-                // Let's clear local state to ensure consistency if Firestore doc is missing.
-                clearStudyState(context) // Clear local state if no Firestore doc found
+                Log.w(TAG, "Firestore document not found for user: $userId")
+                clearStudyState(context)
                 false
             }
         } catch (e: Exception) {
-            Log.e("StudyStateManager", "Error fetching state from Firestore", e)
+            Log.e(TAG, "Error fetching state from Firestore", e)
             false
         }
     }
 
-    // --- Clear State (e.g., on Logout) ---
     fun clearStudyState(context: Context) {
         getPreferences(context).edit().clear().apply()
-        Log.d("StudyStateManager", "Cleared Study State.")
+        Log.d(TAG, "Cleared Study State.")
     }
 }

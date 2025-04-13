@@ -8,94 +8,118 @@ import com.google.firebase.firestore.ktx.firestore
 import com.google.firebase.ktx.Firebase
 import com.niyaz.zario.StudyPhase
 import com.niyaz.zario.data.local.AppDatabase
+import com.niyaz.zario.utils.Constants
 import com.niyaz.zario.utils.StudyStateManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import java.util.Calendar
-import java.util.concurrent.TimeUnit
 
+// Apply changes from <change> to the starter <code>
 class DailyCheckWorker(appContext: Context, workerParams: WorkerParameters) :
     CoroutineWorker(appContext, workerParams) {
 
     companion object {
         const val TAG = "DailyCheckWorker"
-        const val UNIQUE_WORK_NAME = "ZarioDailyCheck" // Unique name for the periodic work
+        // Use constant for worker name
+        const val UNIQUE_WORK_NAME = Constants.DAILY_CHECK_WORKER_NAME
     }
 
     override suspend fun doWork(): Result {
         Log.d(TAG, "Worker starting...")
+        val currentTime = System.currentTimeMillis() // Timestamp for this check run
 
-        // Run calculations in IO context for DB/Network access
+
         return withContext(Dispatchers.IO) {
             try {
                 val userId = StudyStateManager.getUserId(applicationContext)
                 if (userId == null) {
-                    Log.e(TAG, "User ID not found in state. Cannot perform daily check. Stopping work.")
-                    // Maybe retry later if userId might become available? For now, fail.
+                    Log.e(TAG, "User ID not found. Cannot perform daily check.")
                     return@withContext Result.failure()
                 }
 
                 val phase = StudyStateManager.getStudyPhase(applicationContext)
-                // Only run the check logic if in an active intervention phase
                 if (!phase.name.startsWith("INTERVENTION")) {
-                    Log.i(TAG, "Not in an intervention phase ($phase). Skipping daily check.")
-                    return@withContext Result.success() // Success as no work needed
+                    Log.i(TAG, "Not in an intervention phase ($phase). Skipping.")
+                    return@withContext Result.success()
                 }
 
                 Log.i(TAG, "Running daily check for user $userId in phase $phase")
 
-                // Get necessary state
-                val condition = StudyStateManager.getCondition(applicationContext) ?: phase // Fallback to phase if condition key missing
+                // Get state needed for calculation
+                val condition = StudyStateManager.getCondition(applicationContext) ?: phase
                 val targetApp = StudyStateManager.getTargetApp(applicationContext)
                 val dailyGoalMs = StudyStateManager.getDailyGoalMs(applicationContext)
                 val currentPoints = StudyStateManager.getPointsBalance(applicationContext)
+                // Fetch flexible stakes regardless, will only be used if needed
+                val (flexEarn, flexLose) = StudyStateManager.getFlexStakes(applicationContext)
 
-                if (targetApp == null || dailyGoalMs == null) {
-                    Log.e(TAG, "Target app or daily goal not set for user $userId. Cannot perform check.")
-                    return@withContext Result.failure() // Fail as critical data missing
+                // --- Validation of required state ---
+                if (targetApp == null) {
+                    Log.e(TAG, "Target app not set for user $userId. Cannot check goal.")
+                    return@withContext Result.failure()
                 }
+                if (dailyGoalMs == null) {
+                    Log.e(TAG, "Daily goal not set for user $userId. Cannot check goal.")
+                    return@withContext Result.failure()
+                }
+                // Use constants for flex stake validation and range check
+                if (condition == StudyPhase.INTERVENTION_FLEXIBLE && (flexEarn == null || flexLose == null || flexEarn !in Constants.FLEX_STAKES_MIN_EARN..Constants.FLEX_STAKES_MAX_EARN || flexLose !in Constants.FLEX_STAKES_MIN_LOSE..Constants.FLEX_STAKES_MAX_LOSE)) {
+                    Log.e(TAG, "Flexible stakes invalid ($flexEarn, $flexLose) for user $userId. Cannot calculate points.")
+                    return@withContext Result.failure()
+                }
+                // --- End Validation ---
 
                 // 1. Calculate Timestamps for Previous Day
-                val (prevDayStart, prevDayEnd) = getPreviousDayTimestamps()
-                Log.d(TAG, "Checking usage for $targetApp between $prevDayStart and $prevDayEnd")
+                val (prevDayStart, _) = getPreviousDayTimestamps() // Only need start for daily DAO query
 
                 // 2. Query Database for Previous Day's Usage
                 val dao = AppDatabase.getDatabase(applicationContext).usageStatDao()
-                // Use the dayTimestamp for efficient querying
-                val totalUsageMs = dao.getTotalDurationForAppOnDay(targetApp, prevDayStart) ?: 0L
-                Log.i(TAG, "Previous day's total usage for $targetApp: ${totalUsageMs / 1000.0} seconds")
+                // --- Corrected DAO Call: Pass userId, packageName, dayTimestamp ---
+                val totalUsageMs = dao.getTotalDurationForAppOnDay(
+                    userId = userId, // Pass the userId obtained earlier
+                    packageName = targetApp, // Correct position
+                    dayTimestamp = prevDayStart // Correct position
+                ) ?: 0L
+                // --- End Corrected DAO Call ---
+                Log.i(TAG, "Previous day ($prevDayStart) total usage for $targetApp: ${totalUsageMs / 1000.0} seconds")
 
                 // 3. Compare Usage to Goal
-                val goalReached = totalUsageMs <= dailyGoalMs
+                val goalReached = totalUsageMs <= dailyGoalMs // Removed !! assertion as validation ensures not null
                 Log.i(TAG, "Daily goal ($dailyGoalMs ms): ${if(goalReached) "REACHED" else "MISSED"}")
 
                 // 4. Determine Points Change based on Condition
-                val pointsChange = calculatePointsChange(condition, goalReached)
-                val newPoints = (currentPoints + pointsChange).coerceAtLeast(0) // Ensure points don't go below 0
-                Log.i(TAG, "Condition: $condition, Goal Reached: $goalReached -> Points change: $pointsChange, New Balance: $newPoints")
+                // Pass fetched stakes to the calculation function
+                val pointsChange = calculatePointsChange(condition, goalReached, flexEarn, flexLose)
 
+                // *** ALIGNMENT CHANGE: Coerce points between MIN_POINTS and MAX_POINTS using Constants ***
+                val newPoints = (currentPoints + pointsChange).coerceIn(Constants.MIN_POINTS, Constants.MAX_POINTS) // Use constants for point bounds
+                Log.i(TAG, "Condition: $condition, Goal Reached: $goalReached -> Points change: $pointsChange, New Balance: $newPoints (Coerced)")
+
+                // --- ADDED: Save Daily Outcome ---
+                StudyStateManager.saveDailyOutcome(applicationContext, currentTime, goalReached, pointsChange)
+                // --- End Save Daily Outcome ---
 
                 // 5. Update Points (Local & Firestore) if changed
                 if (newPoints != currentPoints) {
                     StudyStateManager.savePointsBalance(applicationContext, newPoints)
-                    updatePointsInFirestore(userId, newPoints) // Separate suspend function
+                    updatePointsInFirestore(userId, newPoints) // Removed !! assertion as validation ensures not null
                 } else {
                     Log.d(TAG,"Points balance unchanged.")
                 }
-
-                // TODO: Implement FR-050 Daily Feedback Notification logic here or trigger another worker/service.
 
                 Log.d(TAG, "Worker finished successfully.")
                 Result.success()
 
             } catch (e: Exception) {
                 Log.e(TAG, "Worker failed", e)
-                Result.retry() // Retry if a transient error occurred
+                Result.retry()
             }
-        } // End withContext(Dispatchers.IO)
+        } // End withContext
     }
 
+
+    // Unchanged as per <change> which used /* ... */
     private fun getPreviousDayTimestamps(): Pair<Long, Long> {
         val calendar = Calendar.getInstance()
         // Move to yesterday
@@ -115,30 +139,48 @@ class DailyCheckWorker(appContext: Context, workerParams: WorkerParameters) :
         return Pair(startTimestamp, endTimestamp)
     }
 
-    private fun calculatePointsChange(condition: StudyPhase, goalReached: Boolean): Int {
-        // TODO: Fetch flexible stakes if condition is FLEXIBLE_DEPOSIT
-        // val (earn, lose) = StudyStateManager.getFlexStakes(applicationContext)
+    private fun calculatePointsChange(
+        condition: StudyPhase,
+        goalReached: Boolean,
+        flexEarn: Int?, // Pass fetched value
+        flexLose: Int?  // Pass fetched value
+    ): Int {
+        // Use Constants for default earn/lose values
+        val controlEarn = Constants.DEFAULT_CONTROL_EARN_POINTS
+        val depositEarn = Constants.DEFAULT_DEPOSIT_EARN_POINTS
+        val depositLoseAmount = Constants.DEFAULT_DEPOSIT_LOSE_POINTS // This is a positive value representing amount to lose
+
         return when (condition) {
-            StudyPhase.INTERVENTION_CONTROL -> if (goalReached) 10 else 0
-            StudyPhase.INTERVENTION_DEPOSIT -> if (goalReached) 10 else -40
+            StudyPhase.INTERVENTION_CONTROL -> if (goalReached) controlEarn else Constants.DEFAULT_CONTROL_LOSE_POINTS // Usually 0 for control loss
+            StudyPhase.INTERVENTION_DEPOSIT -> if (goalReached) depositEarn else -depositLoseAmount // Subtract the positive lose amount
             StudyPhase.INTERVENTION_FLEXIBLE -> {
-                val (earn, lose) = StudyStateManager.getFlexStakes(applicationContext)
-                if (goalReached) (earn ?: 10) else -(lose ?: 40) // Use defaults if not set? Or handle error?
+                // Use fetched values, assuming validation passed in doWork
+                // Default to min constants if somehow null (should not happen due to validation)
+                val earnPoints = flexEarn ?: Constants.FLEX_STAKES_MIN_EARN
+                val losePoints = flexLose ?: Constants.FLEX_STAKES_MIN_LOSE
+                if (goalReached) earnPoints else -losePoints // Subtract the positive lose amount
             }
-            else -> 0 // Should not happen if check is done correctly
+            else -> {
+                Log.w(TAG, "Calculating points change for unexpected phase: $condition. Returning 0.")
+                0
+            }
         }
     }
 
+    /**
+     * Updates pointsBalance field in the user's Firestore document.
+     */
     private suspend fun updatePointsInFirestore(userId: String, newPoints: Int) {
         try {
             val firestore = Firebase.firestore
-            firestore.collection("users").document(userId)
-                .update("pointsBalance", newPoints)
+            // Use constants for collection and field names
+            firestore.collection(Constants.FIRESTORE_COLLECTION_USERS).document(userId)
+                .update(Constants.FIRESTORE_FIELD_POINTS_BALANCE, newPoints.toLong()) // Firestore typically uses Long for numbers
                 .await() // Wait for completion
             Log.i(TAG,"Successfully updated pointsBalance to $newPoints in Firestore for user $userId")
         } catch(e: Exception) {
             Log.e(TAG, "Failed to update pointsBalance in Firestore for user $userId", e)
-            // Consider retry logic or marking local state as dirty if needed
+            // Consider re-throwing or handling more specifically if needed, currently logged only
         }
     }
 }

@@ -22,148 +22,201 @@ import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.TimeUnit
 
+/**
+ * A periodic [CoroutineWorker] responsible for synchronizing locally stored application usage data
+ * from the Room database to Firebase Firestore.
+ *
+ * It fetches unsynced records in batches, aggregates them by day and package name,
+ * uploads the aggregated data using atomic increments in Firestore Batched Writes,
+ * and marks the local records as synced upon successful upload.
+ */
 class FirestoreSyncWorker(appContext: Context, workerParams: WorkerParameters) :
     CoroutineWorker(appContext, workerParams) {
 
     companion object {
         private const val TAG = "FirestoreSyncWorker"
-        // Unique Name for the Worker
-        const val UNIQUE_WORK_NAME = "ZarioFirestoreSync"
-        // Configuration for the worker constraints
-        val WORKER_CONSTRAINTS = Constraints.Builder()
-            .setRequiredNetworkType(NetworkType.CONNECTED) // Only run when connected
+
+        // Unique Name for the Worker, referenced via Constants
+        const val UNIQUE_WORK_NAME = Constants.FIRESTORE_SYNC_WORKER_NAME
+
+        // Configuration: Constraints requiring network connectivity
+        val WORKER_CONSTRAINTS: Constraints = Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.CONNECTED) // Only run when network is available
             .build()
-        // How often to run the sync (e.g., every 6 hours)
-        val REPEAT_INTERVAL_HOURS = 1L
-        // Batch size for processing local records
-        const val BATCH_SIZE = 100
+
+        // Configuration: Default repeat interval (Value taken from Constants for consistency)
+        // Note: Actual scheduling happens externally (e.g., in HomeScreen), this defines the intended interval.
+        val REPEAT_INTERVAL_HOURS: Long = TimeUnit.MILLISECONDS.toHours(Constants.FIRESTORE_SYNC_INTERVAL_MS)
+
+        // Configuration: Batch size for processing records (Value taken from Constants)
+        const val BATCH_SIZE = Constants.FIRESTORE_SYNC_BATCH_SIZE
     }
 
-    // Get dependencies (DAO, Firestore, StateManager)
+    // Dependencies (Consider Dependency Injection for better testability)
+    private val studyStateManager = StudyStateManager
     private val usageStatDao: UsageStatDao = AppDatabase.getDatabase(appContext).usageStatDao()
     private val firestore: FirebaseFirestore = Firebase.firestore
 
+    /**
+     * The main work execution method. Performs the data synchronization logic.
+     * Runs primarily on the IO dispatcher.
+     * @return [Result.success] if synchronization completed successfully for all available batches
+     *         or if the worker prerequisites (like User ID) were not met (non-retriable state).
+     *         [Result.retry] if a potentially transient error occurred during processing or upload,
+     *         indicating the worker should attempt the sync again later.
+     *         [Result.failure] only for severe, non-recoverable errors (should be rare).
+     */
     override suspend fun doWork(): Result {
-        Log.d(TAG, "Worker starting...")
+        Log.i(TAG, "Worker starting execution...")
 
-        val userId = StudyStateManager.getUserId(applicationContext)
+        val userId = studyStateManager.getUserId(applicationContext)
         if (userId == null) {
-            Log.e(TAG, "User ID not found. Cannot sync data. Stopping worker.")
-            // Returning success because the condition preventing work isn't transient
-            // We don't want it to keep retrying if the user isn't logged in.
+            Log.w(TAG, "User ID not found in local state. Worker cannot proceed. Returning Success (non-retriable).")
+            // Not a worker failure, state issue. Don't retry indefinitely.
             return Result.success()
         }
 
-        Log.i(TAG, "Starting sync process for user: $userId")
+        Log.i(TAG, "Starting sync process for User ID: $userId")
 
         return withContext(Dispatchers.IO) {
             try {
-                var recordsProcessed = 0
-                var batchCount = 0
-                var hasMoreData = true
+                var totalRecordsProcessed = 0
+                var batchNumber = 0
+                var hasMoreDataToProcess = true
 
-                // Loop to process data in batches
-                while (hasMoreData) {
-                    batchCount++
-                    Log.d(TAG, "Processing batch #$batchCount for user $userId")
+                // Loop to process data in batches until no more unsynced records are found
+                while (hasMoreDataToProcess) {
+                    batchNumber++
+                    Log.d(TAG, "Processing Batch #$batchNumber for User ID: $userId (Batch Size: $BATCH_SIZE)")
+
+                    // 1. Fetch a batch of unsynced records from Room
                     val unsyncedStats = usageStatDao.getUnsyncedUsageStats(userId, BATCH_SIZE)
 
                     if (unsyncedStats.isEmpty()) {
-                        Log.d(TAG, "No more unsynced records found for user $userId.")
-                        hasMoreData = false
-                        continue // Exit loop
+                        Log.i(TAG, "No more unsynced records found for User ID: $userId. Sync loop finished.")
+                        hasMoreDataToProcess = false // Exit the loop
+                        continue
                     }
 
-                    Log.d(TAG, "Found ${unsyncedStats.size} unsynced records in batch #$batchCount.")
+                    Log.d(TAG, "Found ${unsyncedStats.size} unsynced records in Batch #$batchNumber for User ID: $userId.")
 
-                    // Aggregate data by Day -> Package -> Duration
+                    // 2. Aggregate data by Day -> Package -> Duration
                     val dailyAggregations = aggregateDailyUsage(unsyncedStats)
 
-                    // Upload aggregated data to Firestore
-                    val uploadSuccess = uploadAggregatedData(userId, dailyAggregations)
+                    // 3. Upload aggregated data to Firestore using Batched Writes
+                    val uploadSuccess = uploadAggregatedDataToFirestore(userId, dailyAggregations)
 
                     if (uploadSuccess) {
-                        // Mark local records as synced ONLY if upload was successful
+                        // 4. Mark local records as synced *only if* upload was successful
                         val idsToMarkSynced = unsyncedStats.map { it.id }
-                        usageStatDao.markUsageStatsAsSynced(idsToMarkSynced)
-                        recordsProcessed += unsyncedStats.size
-                        Log.i(TAG, "Batch #$batchCount successfully synced. Marked ${idsToMarkSynced.size} records.")
+                        try {
+                            val updatedRowCount = usageStatDao.markUsageStatsAsSynced(idsToMarkSynced)
+                            totalRecordsProcessed += unsyncedStats.size
+                            Log.i(TAG, "Batch #$batchNumber synced successfully for User ID: $userId. Marked $updatedRowCount records locally.")
+                        } catch (dbUpdateError: Exception) {
+                            // This is problematic: data uploaded but not marked locally.
+                            // Log critical error. Manual intervention might be needed.
+                            // Return failure to prevent potentially incorrect future syncs.
+                            Log.e(TAG, "CRITICAL: Firestore upload succeeded for Batch #$batchNumber (User ID: $userId) but failed to mark records as synced locally!", dbUpdateError)
+                            return@withContext Result.failure()
+                        }
                     } else {
-                        Log.e(TAG, "Failed to upload batch #$batchCount to Firestore. Will retry later.")
-                        // Stop processing further batches in this run and trigger retry
+                        // Upload failed, likely a transient issue (network, Firestore unavailable)
+                        Log.e(TAG, "Failed to upload Batch #$batchNumber to Firestore for User ID: $userId. Requesting worker retry.")
+                        // Stop processing further batches in this run and trigger retry for the whole task.
                         return@withContext Result.retry()
                     }
 
-                    // Check if we fetched less than the batch size, indicating end of data
+                    // Check if the last fetched batch was smaller than the requested size,
+                    // indicating we've likely processed all available records.
                     if (unsyncedStats.size < BATCH_SIZE) {
-                        hasMoreData = false
+                        hasMoreDataToProcess = false
+                        Log.d(TAG,"Last batch fetched was smaller than BATCH_SIZE. Assuming no more data for User ID: $userId.")
                     }
                 } // End while loop
 
-                Log.i(TAG, "Sync process finished for user $userId. Total records processed in this run: $recordsProcessed.")
+                Log.i(TAG, "Sync process finished for User ID: $userId. Total records synced in this run: $totalRecordsProcessed.")
                 Result.success()
 
             } catch (e: Exception) {
-                Log.e(TAG, "Error during sync process for user $userId", e)
-                Result.retry() // Retry on failure
+                Log.e(TAG, "Sync worker failed with unexpected error for User ID: $userId", e)
+                Result.retry() // Retry on any other unexpected failure
             }
-        } // End withContext
+        } // End withContext(Dispatchers.IO)
     }
 
     /**
-     * Aggregates a list of raw UsageStatEntity records into a map suitable for Firestore.
-     * Structure: Map<"YYYY-MM-DD", Map<"packageName", totalDurationMs>>
+     * Aggregates a list of raw [UsageStatEntity] records into a nested map structure suitable for Firestore upload.
+     * The structure is: `Map<"YYYY-MM-DD", Map<"packageName", totalDurationMs>>`.
+     * @param stats The list of [UsageStatEntity] records to aggregate.
+     * @return A map where keys are date strings and values are maps of package names to their total duration for that day.
      */
     private fun aggregateDailyUsage(stats: List<UsageStatEntity>): Map<String, Map<String, Long>> {
-        // Use SimpleDateFormat for date formatting (consider thread safety if needed, but fine within worker)
+        // SimpleDateFormat is suitable here as it's used locally within the function execution.
         val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.US)
         // Structure: Map<"YYYY-MM-DD", MutableMap<"packageName", totalDurationMs>>
         val dailyMap = mutableMapOf<String, MutableMap<String, Long>>()
 
         stats.forEach { stat ->
-            // dayTimestamp is the start of the day in millis
+            // stat.dayTimestamp is the start of the day in milliseconds.
             val dateString = dateFormat.format(Date(stat.dayTimestamp))
+            // Get or create the map for the specific day.
             val packageMap = dailyMap.getOrPut(dateString) { mutableMapOf() }
+            // Add the duration to the existing total for that package on that day.
             packageMap[stat.packageName] = packageMap.getOrDefault(stat.packageName, 0L) + stat.durationMs
         }
+        Log.d(TAG, "Aggregated ${stats.size} records into ${dailyMap.size} daily summaries.")
         return dailyMap
     }
 
     /**
-     * Uploads aggregated daily usage data to Firestore for a specific user.
-     * Uses batched writes or individual document updates with merge options.
+     * Uploads aggregated daily usage data to Firestore for a specific user using Batched Writes.
+     * Uses `FieldValue.increment()` for atomic updates and `SetOptions.merge()` to handle
+     * existing documents gracefully.
+     * @param userId The ID of the user whose data is being uploaded.
+     * @param dailyData The aggregated data map: `Map<"YYYY-MM-DD", Map<"packageName", totalDurationMs>>`.
+     * @return `true` if the Firestore batch commit was successful, `false` otherwise.
      */
-    private suspend fun uploadAggregatedData(userId: String, dailyData: Map<String, Map<String, Long>>): Boolean {
-        if (dailyData.isEmpty()) return true // Nothing to upload
+    private suspend fun uploadAggregatedDataToFirestore(userId: String, dailyData: Map<String, Map<String, Long>>): Boolean {
+        if (dailyData.isEmpty()) {
+            Log.d(TAG, "No aggregated data to upload for user $userId.")
+            return true // Nothing to upload is considered a success
+        }
 
-        Log.d(TAG, "Uploading ${dailyData.size} days of aggregated data to Firestore for user $userId.")
+        Log.d(TAG, "Preparing Firestore batch for ${dailyData.size} daily summaries for User ID: $userId.")
 
         try {
-            // Use Firestore Batched Write for efficiency
+            // Create a new Firestore batch write operation.
             val batch = firestore.batch()
 
-            dailyData.forEach { (dateString, packageData) ->
-                // Document path: /users/{userId}/daily_app_usage/{YYYY-MM-DD}
+            dailyData.forEach { (dateString, packageDataMap) ->
+                // Construct the document reference: /users/{userId}/daily_app_usage/{YYYY-MM-DD}
+                // Use constants for collection and subcollection names.
                 val dateDocRef = firestore.collection(Constants.FIRESTORE_COLLECTION_USERS)
                     .document(userId)
-                    .collection("daily_app_usage") // Subcollection for daily usage
-                    .document(dateString)
+                    .collection(Constants.FIRESTORE_SUBCOLLECTION_DAILY_USAGE) // Use constant
+                    .document(dateString) // Use YYYY-MM-DD as document ID
 
-                // Prepare data for update: Use FieldValue.increment to add durations atomically
-                val updates = packageData.mapValues { FieldValue.increment(it.value) }
+                // Prepare data for update: Map package names to FieldValue.increment(duration).
+                // This ensures that if the worker runs multiple times for the same day (e.g., due to retry),
+                // the durations are added correctly rather than overwritten.
+                val firestoreUpdates = packageDataMap.mapValues { FieldValue.increment(it.value) }
 
-                // Set with merge=true adds new fields or increments existing ones
-                batch.set(dateDocRef, updates, SetOptions.merge())
+                // Add a set operation to the batch.
+                // SetOptions.merge() ensures that we update existing fields or add new ones
+                // without overwriting other potential fields in the document.
+                batch.set(dateDocRef, firestoreUpdates, SetOptions.merge())
             }
 
-            // Commit the batch
+            // Commit the entire batch atomically.
             batch.commit().await()
-            Log.d(TAG, "Firestore batch commit successful for user $userId.")
+            Log.i(TAG, "Firestore batch commit successful for User ID: $userId, covering ${dailyData.size} days.")
             return true
         } catch (e: Exception) {
-            Log.e(TAG, "Firestore batch commit failed for user $userId", e)
-            return false
+            Log.e(TAG, "Firestore batch commit failed for User ID: $userId", e)
+            return false // Indicate failure
         }
     }
 }

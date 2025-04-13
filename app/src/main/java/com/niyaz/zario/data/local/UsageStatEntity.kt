@@ -2,34 +2,51 @@ package com.niyaz.zario.data.local
 
 import androidx.room.ColumnInfo
 import androidx.room.Entity
+import androidx.room.Index // Ensure Index is imported if using @Index separately
 import androidx.room.PrimaryKey
 
 /**
- * Represents a single record of app usage duration within a specific interval.
+ * Represents a single record of application usage duration stored in the local Room database.
+ * Each entity captures the time spent in a specific app during a particular interval,
+ * associated with a specific user, and tracks its synchronization status with Firestore.
+ *
+ * @property id Auto-generated primary key for the database record.
+ * @property userId The unique identifier (Firebase Auth UID) of the user this record belongs to. Indexed for efficient retrieval.
+ * @property packageName The package name of the application that was used (e.g., "com.example.app").
+ * @property durationMs The duration, in milliseconds, for which the app was used during the defined interval.
+ * @property intervalStartTimestamp The start timestamp (epoch milliseconds) of the interval during which usage was tracked.
+ * @property intervalEndTimestamp The end timestamp (epoch milliseconds) of the interval during which usage was tracked.
+ * @property dayTimestamp The timestamp (epoch milliseconds) representing the start (00:00:00) of the day this usage occurred on. Used for daily aggregation.
+ * @property isSynced Flag indicating whether this specific record has been successfully aggregated and synced to Firestore. `false` (0) means unsynced, `true` (1) means synced.
  */
-@Entity(tableName = "usage_stats") // Use the actual table name
+@Entity(
+    tableName = "usage_stats",
+    // Add index explicitly within the @Entity annotation for clarity
+    indices = [Index(value = ["userId"]),
+    Index(value = ["userId", "isSynced"])
+    ]
+)
 data class UsageStatEntity(
     @PrimaryKey(autoGenerate = true)
-    val id: Long = 0, // Keep primary key
+    val id: Long = 0,
 
-    // Add userId to associate record with the logged-in user
-    @ColumnInfo(index = true) // Index userId for faster queries in the worker
+    // Removed explicit @ColumnInfo(index = true) here as it's defined in @Entity.indices above
     val userId: String,
 
-    val packageName: String, // Package name of the app used
+    val packageName: String,
 
-    // Store duration in milliseconds for precision
     val durationMs: Long,
 
-    // Store the start and end timestamps of the interval during which this duration occurred
     val intervalStartTimestamp: Long,
     val intervalEndTimestamp: Long,
 
-    // Add a timestamp representing the start of the day (00:00:00) for easy daily aggregation
-    val dayTimestamp: Long, // Keep dayTimestamp for potential daily queries
+    // Consider adding an index if frequently querying by dayTimestamp AND userId
+    // indices = [Index(value = ["userId"]), Index(value = ["dayTimestamp", "userId"])]
+    val dayTimestamp: Long,
 
-    // Add flag to track if this record has been synced to Firestore
-    @ColumnInfo(defaultValue = "0") // Default to not synced (0 for false)
+    // Default value handled by Room if column added via migration,
+    // but good practice to set default in data class too.
+    // Room uses INTEGER type for Boolean, 0 for false, 1 for true.
+    @ColumnInfo(defaultValue = "0")
     val isSynced: Boolean = false
-    // We could add a userId later if needed for multi-user support, but for now assume single user -> This comment is now outdated by the addition of userId
 )

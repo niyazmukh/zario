@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.niyaz.zario.data.model.AppBaselineInfo
 import com.niyaz.zario.data.repository.StudyRepository
+import com.niyaz.zario.utils.Constants // Ensure Constants is imported
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -24,204 +25,243 @@ import java.time.LocalDateTime
 import java.time.ZoneId
 import java.util.Calendar
 import java.util.concurrent.TimeUnit
+import com.niyaz.zario.data.local.BaselineUsageRecord
+import kotlin.math.max
 
-// --- CHANGE: Constructor takes Repository, extends ViewModel ---
+/**
+ * ViewModel for the [com.niyaz.zario.ui.screens.HomeScreen].
+ *
+ * Manages the UI state and business logic related to:
+ * - Displaying the current day's usage for the target app during intervention phases.
+ * - Orchestrating the baseline analysis and goal-setting process.
+ * - Interacting with the [StudyRepository] to fetch and update study data.
+ *
+ * @property repository The [StudyRepository] instance used for data access.
+ */
 class HomeViewModel(private val repository: StudyRepository) : ViewModel() {
 
-    private val TAG = "HomeViewModel" // Add TAG
+    private val TAG = "HomeViewModel"
 
-    // --- State for Current Day Usage ---
-    private val _todayUsageMs = MutableStateFlow<Long>(0L)
+    /** UI state for the Goal Setting phase. */
+    enum class GoalSettingUiState { IDLE, LOADING, LOADED, ERROR, SAVING, SAVED }
+
+    // --- StateFlows for UI ---
+
+    /** Stores the current user's ID after initialization. Null if initialization fails or user logs out. */
+    private var currentUserId: String? = null
+
+    /** Tracks the package name of the current target application. Null if none selected or not applicable. */
+    private val targetAppFlow = MutableStateFlow<String?>(null) // Internal tracker
+
+    /** Job responsible for collecting the usage flow for the current target app. */
+    private var usageCollectionJob: Job? = null
+
+    /** StateFlow holding the accumulated usage duration (in milliseconds) for the target app *today*. */
+    private val _todayUsageMs = MutableStateFlow(0L)
     val todayUsageMs: StateFlow<Long> = _todayUsageMs.asStateFlow()
 
-    // State for hourly usage data
-    private val _hourlyUsageData = MutableStateFlow<Map<Int, Long>>(emptyMap())
-    val hourlyUsageData: StateFlow<Map<Int, Long>> = _hourlyUsageData.asStateFlow()
-
-    // --- State for Baseline Analysis & Goal Setting ---
-    // AppBaselineInfo data class moved to data.model
-
-    // State for overall Goal Setting process
-    enum class GoalSettingUiState { IDLE, LOADING, LOADED, ERROR, SAVING, SAVED }
+    /** StateFlow representing the current state of the goal-setting UI process. */
     private val _goalSettingState = MutableStateFlow(GoalSettingUiState.IDLE)
     val goalSettingState: StateFlow<GoalSettingUiState> = _goalSettingState.asStateFlow()
 
-    // Holds the list of apps with baseline usage for selection
+    /** StateFlow holding the list of apps with calculated baseline usage, for display during goal setting. */
     private val _baselineAppList = MutableStateFlow<List<AppBaselineInfo>>(emptyList())
     val baselineAppList: StateFlow<List<AppBaselineInfo>> = _baselineAppList.asStateFlow()
 
-    // Holds the suggested app (most used)
+    /** StateFlow holding the app suggested as the target (typically the most used during baseline). */
     private val _suggestedApp = MutableStateFlow<AppBaselineInfo?>(null)
     val suggestedApp: StateFlow<AppBaselineInfo?> = _suggestedApp.asStateFlow()
 
-    // --- Flow Collector Logic ---
-    private val targetAppFlow = MutableStateFlow<String?>(null)
-    private var usageCollectionJob: Job? = null // Keep track of the collection job
-
-    // Store userId obtained during init
-    private var currentUserId: String? = null
+    /** StateFlow holding aggregated baseline usage data per hour (0-23), used for the bar chart. */
+    private val _hourlyUsageData = MutableStateFlow<Map<Int, Long>>(emptyMap())
+    val hourlyUsageData: StateFlow<Map<Int, Long>> = _hourlyUsageData.asStateFlow()
 
 
+    // --- Initialization ---
     init {
-        Log.d(TAG, "ViewModel Initializing")
-        viewModelScope.launch { // Use viewModelScope directly
-            // Fetch and store userId first
-            currentUserId = repository.getUserId() // Get userId from repository
-            if (currentUserId == null) {
-                Log.e(TAG, "ViewModel initialized but User ID is null. Usage data will not be collected.")
-                // Optionally handle this state, e.g., trigger logout or show error
-                return@launch // Stop further initialization if no userId
+        Log.d(TAG, "ViewModel initializing...")
+        viewModelScope.launch { // Use viewModelScope for initialization logic
+            try {
+                // Fetch and store userId first - critical for subsequent operations
+                currentUserId = repository.getUserId()
+                if (currentUserId == null) {
+                    Log.e(TAG, "ViewModel initialized but User ID is null. Cannot fetch user-specific data.")
+                    // Consider triggering a logout or error state if appropriate
+                    return@launch // Stop initialization if no user ID
+                }
+                Log.i(TAG, "ViewModel initialized for User ID: $currentUserId")
+
+                // Load initial target app from repository (might be null)
+                targetAppFlow.value = repository.getTargetApp()
+                Log.d(TAG, "Initial target app loaded: ${targetAppFlow.value}")
+
+                // Start collecting today's usage data for the target app (if any)
+                startOrUpdateUsageCollection()
+
+                // Observe subsequent changes to the target app (e.g., after goal setting)
+                observeTargetAppChanges()
+
+            } catch (e: Exception) {
+                Log.e(TAG, "Error during ViewModel initialization", e)
+                // Handle initialization error appropriately, e.g., set an error state
             }
-            Log.d(TAG, "ViewModel initialized for user: $currentUserId")
-
-            // Load initial target app
-            targetAppFlow.value = repository.getTargetApp() // Use repository
-            Log.d(TAG, "Initial target app loaded: ${targetAppFlow.value}")
-
-            // Start collecting usage immediately
-            startOrUpdateUsageCollection()
         }
+    }
 
-        // Observe changes in the target app and restart collection if needed
+    /** Observes changes to the internal `targetAppFlow` and restarts usage collection. */
+    private fun observeTargetAppChanges() {
         viewModelScope.launch {
             targetAppFlow
-                .drop(1) // Skip initial value emission as it's handled above
-                .distinctUntilChanged()
+                .drop(1) // Skip the initial value emission (handled in init)
+                .distinctUntilChanged() // Only react to actual changes
                 .collect { currentTargetApp ->
-                    Log.d(TAG, "Target app changed to: $currentTargetApp. Restarting usage collection.")
-                    startOrUpdateUsageCollection() // Restart collection when target changes
+                    Log.i(TAG, "Target app changed to: $currentTargetApp. Restarting usage collection.")
+                    startOrUpdateUsageCollection() // Restart collection logic
                 }
         }
+    }
 
-    } // End Init
+    // --- Usage Collection Logic ---
 
+    /**
+     * Starts or restarts the coroutine job that collects the usage duration flow
+     * for the current target application from the repository.
+     * Cancels any existing collection job. Does nothing if the current user ID or target app is null.
+     */
     private fun startOrUpdateUsageCollection() {
-        usageCollectionJob?.cancel() // Cancel previous collection job if running
-        val currentTargetApp = targetAppFlow.value
+        usageCollectionJob?.cancel() // Cancel existing job if any
+        val currentTarget = targetAppFlow.value
         val userId = currentUserId // Use the stored userId
 
-        // Ensure both userId and targetApp are available
-        if (userId != null && currentTargetApp != null) {
-            usageCollectionJob = viewModelScope.launch { // Launch new collection in viewModelScope
+        if (userId != null && currentTarget != null) {
+            usageCollectionJob = viewModelScope.launch {
                 val todayStartMs = getStartOfDayTimestamp(System.currentTimeMillis())
-                Log.d(TAG, "Collecting today's usage flow for user $userId, app: $currentTargetApp, DayStart: $todayStartMs")
+                Log.d(TAG, "Starting usage collection for User $userId, App: $currentTarget, DayStart: $todayStartMs")
 
-                // Combine repository flow with a ticker to ensure updates even if DB doesn't change frequently
+                // Combine the database flow with a periodic ticker.
+                // The ticker ensures the UI potentially updates even if the underlying DB value
+                // doesn't change frequently, providing a sense of live-ness.
+                // A simpler alternative might rely solely on Room's flow emissions if precise
+                // real-time updates are less critical.
                 combine(
-                    // Pass userId to the repository method
-                    repository.getTodayUsageForAppFlow(userId, currentTargetApp, todayStartMs),
-                    tickerFlow(TimeUnit.MINUTES.toMillis(5)) // Check every 5 mins
-                ) { usage, _ -> usage } // Combine logic: take the usage value
-                    .catch { e -> Log.e(TAG, "Error collecting today's usage flow for user $userId", e) }
-                    .distinctUntilChanged() // Only emit if the usage value changes
+                    repository.getTodayUsageForAppFlow(userId, currentTarget, todayStartMs),
+                    tickerFlow(TimeUnit.MINUTES.toMillis(1)) // Ticker interval (e.g., 1 minute)
+                ) { usage, _ -> usage } // Combine logic: just take the usage value from the DB flow
+                    .catch { e -> Log.e(TAG, "Error collecting today's usage flow for User $userId, App $currentTarget", e) }
+                    .distinctUntilChanged() // Avoid redundant updates
                     .collect { usage ->
                         val currentUsage = usage ?: 0L
                         if (_todayUsageMs.value != currentUsage) {
                             _todayUsageMs.value = currentUsage
-                            // Log only on change to reduce noise
-                            Log.d(TAG, "Updated todayUsageMs for user $userId: ${_todayUsageMs.value}")
+                            // Log only when the value actually changes
+                            Log.v(TAG, "Updated todayUsageMs for User $userId, App $currentTarget: $currentUsage ms")
                         }
                     }
             }
         } else {
-            // If target app becomes null or userId is missing, reset usage to 0
-            _todayUsageMs.value = 0L
-            Log.d(TAG, "Target app ($currentTargetApp) or User ID ($userId) is null. Usage set to 0. Usage collection stopped.")
+            _todayUsageMs.value = 0L // Reset usage if no target app or user
+            Log.d(TAG, "Usage collection stopped: Target app ($currentTarget) or User ID ($userId) is null.")
         }
     }
-
 
     // --- Baseline Analysis Logic ---
 
     /**
-     * Triggers the calculation and loading of baseline data when entering GOAL_SETTING phase.
+     * Initiates the process of loading and analyzing baseline usage data.
+     * Sets the [goalSettingState] to [GoalSettingUiState.LOADING].
+     * Fetches aggregated and hourly usage data from the repository for the baseline period.
+     * Updates [baselineAppList], [suggestedApp], [hourlyUsageData], and sets [goalSettingState]
+     * to [GoalSettingUiState.LOADED] on success or [GoalSettingUiState.ERROR] on failure.
+     * Does nothing if already loading or loaded.
      */
     fun loadBaselineData() {
-        if (_goalSettingState.value != GoalSettingUiState.IDLE && _goalSettingState.value != GoalSettingUiState.ERROR) {
-            Log.d(TAG, "Baseline data already loading or loaded. State: ${_goalSettingState.value}")
+        // Prevent concurrent loading attempts
+        if (_goalSettingState.value == GoalSettingUiState.LOADING || _goalSettingState.value == GoalSettingUiState.LOADED) {
+            Log.d(TAG, "loadBaselineData() called but already loading or loaded. State: ${_goalSettingState.value}")
             return
         }
-        Log.d(TAG, "Starting baseline data load...")
+        Log.i(TAG, "Initiating baseline data load for User ID: $currentUserId")
         _goalSettingState.value = GoalSettingUiState.LOADING
-        val userId = currentUserId // Get stored userId
+        val userId = currentUserId
 
         if (userId == null) {
             Log.e(TAG, "Cannot load baseline data: User ID is null.")
-            _goalSettingState.value = GoalSettingUiState.ERROR // Set error state
+            _goalSettingState.value = GoalSettingUiState.ERROR
             return
         }
 
-        viewModelScope.launch(Dispatchers.IO) { // Use IO dispatcher for repository calls
+        viewModelScope.launch(Dispatchers.IO) { // Use IO dispatcher for repository/calculation
             try {
-                // --- Use Repository ---
                 val baselineStartTime = repository.getStudyStartTimestamp()
                 if (baselineStartTime <= 0) {
-                    Log.e(TAG, "Invalid baseline start time ($baselineStartTime). Cannot load data.")
-                    withContext(Dispatchers.Main) { _goalSettingState.value = GoalSettingUiState.ERROR }
-                    return@launch
+                    throw IllegalStateException("Invalid baseline start time ($baselineStartTime) found.")
                 }
 
-                val baselineDurationDays = 7
-                val baselineEndTime = baselineStartTime + TimeUnit.DAYS.toMillis(baselineDurationDays.toLong())
+                // Use baseline duration from Constants
+                val baselineEndTime = baselineStartTime + Constants.BASELINE_DURATION_MS
                 val now = System.currentTimeMillis()
 
+                // Ensure baseline period has actually ended before proceeding
                 if (now < baselineEndTime) {
-                    Log.w(TAG, "Attempted to load baseline data before baseline period ended.")
+                    // It's technically possible to enter Goal Setting phase slightly early if worker runs late.
+                    // Handle this gracefully by setting back to IDLE or potentially showing a 'wait' message.
+                    Log.w(TAG, "Attempted to load baseline data before baseline period ended (Now: $now < End: $baselineEndTime). Resetting state.")
                     withContext(Dispatchers.Main) { _goalSettingState.value = GoalSettingUiState.IDLE }
                     return@launch
                 }
 
-                Log.d(TAG, "Fetching baseline usage for user $userId between $baselineStartTime and $baselineEndTime")
-                // --- Use Repository, passing userId ---
+                Log.d(TAG, "Fetching baseline data for User $userId between $baselineStartTime and $baselineEndTime")
+                // Fetch aggregated usage (top apps) and detailed records (for hourly chart)
                 val aggregatedUsage = repository.getAggregatedUsageForBaseline(userId, baselineStartTime, baselineEndTime)
                 val hourlyRecords = repository.getAllUsageRecordsForBaseline(userId, baselineStartTime, baselineEndTime)
 
-                // --- Process Hourly Usage (Unchanged logic, just source is different) ---
-                val hourlyMap = mutableMapOf<Int, Long>()
-                hourlyRecords.forEach { record ->
-                    val instant = Instant.ofEpochMilli(record.intervalStartTimestamp)
-                    val dateTime = LocalDateTime.ofInstant(instant, ZoneId.systemDefault())
-                    val hour = dateTime.hour
-                    hourlyMap[hour] = hourlyMap.getOrDefault(hour, 0L) + record.durationMs
-                }
-                withContext(Dispatchers.Main) { _hourlyUsageData.value = hourlyMap.toMap() } // Update on Main thread
-                Log.d(TAG, "Processed hourly usage data for user $userId: ${_hourlyUsageData.value.size} hours with data.")
+                // --- Process Hourly Usage ---
+                val hourlyMap = processHourlyData(hourlyRecords)
 
+                // --- Process Aggregated Usage ---
                 if (aggregatedUsage.isEmpty()) {
-                    Log.w(TAG, "No significant baseline usage data found for user $userId.")
+                    Log.w(TAG, "No significant baseline usage data found for User $userId after aggregation.")
+                    // Update state on Main thread for UI consistency
                     withContext(Dispatchers.Main) {
                         _baselineAppList.value = emptyList()
                         _suggestedApp.value = null
-                        _hourlyUsageData.value = emptyMap()
-                        _goalSettingState.value = GoalSettingUiState.LOADED // Loaded, but empty
+                        _hourlyUsageData.value = hourlyMap // Hourly data might still exist
+                        _goalSettingState.value = GoalSettingUiState.LOADED // Loaded, but potentially empty list
                     }
                     return@launch
                 }
 
-                // Calculate average daily usage and map to AppBaselineInfo
-                val appInfoList = aggregatedUsage.map { baseline ->
-                    val averageDailyMs = baseline.totalDurationMs / baselineDurationDays
-                    // --- Use Repository to get details (name/icon) ---
-                    // Repository call getAppDetails does not need userId
-                    val appDetails = repository.getAppDetails(baseline.packageName)
-                    AppBaselineInfo(
-                        packageName = baseline.packageName,
-                        appName = appDetails.appName,
-                        averageDailyUsageMs = averageDailyMs, // Now add the calculated average
-                        icon = appDetails.icon
-                    )
+                // Calculate average daily usage and map to AppBaselineInfo DTOs
+                val baselineDurationDays = TimeUnit.MILLISECONDS.toDays(Constants.BASELINE_DURATION_MS).toInt().coerceAtLeast(1)
+                val appInfoList = aggregatedUsage.mapNotNull { baseline -> // Use mapNotNull to handle potential errors fetching app details
+                    try {
+                        val averageDailyMs = baseline.totalDurationMs / baselineDurationDays
+                        // Get app name/icon details from repository (which uses AppInfoHelper)
+                        val appDetails = repository.getAppDetails(baseline.packageName)
+                        AppBaselineInfo(
+                            packageName = baseline.packageName,
+                            appName = appDetails.appName,
+                            averageDailyUsageMs = averageDailyMs,
+                            icon = appDetails.icon
+                        )
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error processing baseline details for package ${baseline.packageName}", e)
+                        null // Skip this app if details can't be fetched
+                    }
                 }
 
-                withContext(Dispatchers.Main) { // Update StateFlows on Main thread
+                // --- Update State on Main Thread ---
+                withContext(Dispatchers.Main) {
                     _baselineAppList.value = appInfoList
-                    _suggestedApp.value = appInfoList.firstOrNull()
-                    Log.d(TAG, "Baseline data loaded for user $userId. Suggesting: ${_suggestedApp.value?.appName}. Total apps found: ${appInfoList.size}")
+                    _suggestedApp.value = appInfoList.firstOrNull() // Suggest the most used app
+                    _hourlyUsageData.value = hourlyMap
                     _goalSettingState.value = GoalSettingUiState.LOADED
+                    Log.i(TAG, "Baseline data loaded for User $userId. Suggesting: ${_suggestedApp.value?.appName}. Apps: ${appInfoList.size}")
                 }
 
             } catch (e: Exception) {
-                Log.e(TAG, "Error loading baseline data for user $userId", e)
-                withContext(Dispatchers.Main) {
+                Log.e(TAG, "Error loading baseline data for User $userId", e)
+                withContext(Dispatchers.Main) { // Ensure state updates are on Main thread
                     _goalSettingState.value = GoalSettingUiState.ERROR
                     _baselineAppList.value = emptyList()
                     _suggestedApp.value = null
@@ -231,108 +271,161 @@ class HomeViewModel(private val repository: StudyRepository) : ViewModel() {
         }
     } // End loadBaselineData
 
+    /** Processes raw baseline records into a map of Hour -> Total Duration (ms). */
+    private fun processHourlyData(records: List<BaselineUsageRecord>): Map<Int, Long> {
+        val hourlyMap = mutableMapOf<Int, Long>()
+        records.forEach { record ->
+            try {
+                val instant = Instant.ofEpochMilli(record.intervalStartTimestamp)
+                // Use device's default time zone for grouping by local hour
+                val dateTime = LocalDateTime.ofInstant(instant, ZoneId.systemDefault())
+                val hour = dateTime.hour // Hour: 0-23
+                hourlyMap[hour] = hourlyMap.getOrDefault(hour, 0L) + record.durationMs
+            } catch (e: Exception) {
+                Log.e(TAG, "Error processing hourly data for record starting at ${record.intervalStartTimestamp}", e)
+            }
+        }
+        Log.d(TAG, "Processed ${records.size} records into ${hourlyMap.size} hourly summaries.")
+        return hourlyMap.toMap() // Return immutable map
+    }
 
     // --- Goal Setting Confirmation Logic ---
 
     /**
-     * Called when the user confirms their target app selection.
-     * Uses the repository to calculate the goal, persist the data, and transition the phase.
+     * Confirms the user's selection of a target application.
+     * Calculates the daily goal based on the baseline average and reduction factor.
+     * Calls the repository to persist the target app, goal, and update the study phase.
+     * Updates [goalSettingState] to [GoalSettingUiState.SAVING] during the operation,
+     * then to [GoalSettingUiState.SAVED] on success or [GoalSettingUiState.ERROR] on failure.
      *
-     * @param selectedAppInfo The AppBaselineInfo object for the app chosen by the user.
+     * @param selectedAppInfo The [AppBaselineInfo] of the application selected by the user.
      */
     fun confirmGoalSelection(selectedAppInfo: AppBaselineInfo?) {
         if (selectedAppInfo == null) {
-            Log.e(TAG, "Confirm button clicked but selectedAppInfo is null.")
-            // Optionally update state to show an error message in UI
+            Log.e(TAG, "confirmGoalSelection called with null selectedAppInfo.")
+            _goalSettingState.value = GoalSettingUiState.ERROR // Indicate error if selection is missing
             return
         }
+        // Ensure we are in the correct state to save
         if (_goalSettingState.value != GoalSettingUiState.LOADED) {
-            Log.w(TAG, "Confirm button clicked in unexpected state: ${_goalSettingState.value}")
+            Log.w(TAG, "confirmGoalSelection called in unexpected state: ${_goalSettingState.value}")
             return
         }
 
-        val userId = currentUserId // Use stored userId for logging/potential use
-        Log.d(TAG, "Confirming goal selection for user $userId: ${selectedAppInfo.appName}")
+        val userId = currentUserId
+        if (userId == null) {
+            Log.e(TAG, "Cannot confirm goal selection: User ID is null.")
+            _goalSettingState.value = GoalSettingUiState.ERROR
+            return
+        }
+
+        Log.i(TAG, "Confirming goal selection for User $userId: App='${selectedAppInfo.appName}'")
         _goalSettingState.value = GoalSettingUiState.SAVING
 
         viewModelScope.launch(Dispatchers.IO) { // Use IO for repository operation
             try {
-                // Calculate 20% reduction goal (FR015)
+                // Calculate the daily goal (Apply reduction factor, ensure minimum duration)
                 val baselineAverageMs = selectedAppInfo.averageDailyUsageMs
-                val reductionFactor = 0.80
-                val dailyGoalMs = (baselineAverageMs * reductionFactor).toLong().coerceAtLeast(60000L)
-                Log.d(TAG, "Baseline Avg: $baselineAverageMs ms, Calculated Goal: $dailyGoalMs ms")
+                // Use constants for calculation
+                val dailyGoalMs = (baselineAverageMs * Constants.GOAL_REDUCTION_FACTOR)
+                    .toLong()
+                    .coerceAtLeast(Constants.MINIMUM_GOAL_DURATION_MS)
 
-                // --- Use Repository's combined operation ---
-                // Check again just before critical operation
-                val confirmedUserId = currentUserId
-                if (confirmedUserId == null) {
-                    throw IllegalStateException("User ID not found for goal confirmation.")
-                }
+                Log.d(TAG, "User $userId: Baseline Avg=${baselineAverageMs}ms, Calculated Goal=${dailyGoalMs}ms")
+
+                // Call the repository's combined operation to save goal, target, and phase
                 val result = repository.confirmGoalSelection(
-                    userId = confirmedUserId, // Pass confirmed userId
+                    userId = userId,
                     selectedAppPkg = selectedAppInfo.packageName,
                     calculatedGoalMs = dailyGoalMs
                 )
 
-                if (result.isSuccess) {
-                    // Refresh the target app flow for today's usage tracking
-                    // This will trigger startOrUpdateUsageCollection via the flow collector
-                    targetAppFlow.value = selectedAppInfo.packageName
-
-                    Log.i(TAG, "Goal confirmed and saved via repository for user $confirmedUserId. Target: ${selectedAppInfo.packageName}, Goal: $dailyGoalMs ms.")
-                    withContext(Dispatchers.Main) {
+                // Update state based on repository result (on Main thread)
+                withContext(Dispatchers.Main) {
+                    if (result.isSuccess) {
+                        // Trigger update of the target app flow to start usage collection
+                        targetAppFlow.value = selectedAppInfo.packageName
                         _goalSettingState.value = GoalSettingUiState.SAVED
+                        Log.i(TAG, "Goal confirmed and saved successfully for User $userId.")
+                        // UI should react to phase change driven by repository update
+                    } else {
+                        _goalSettingState.value = GoalSettingUiState.ERROR
+                        Log.e(TAG, "Failed to save goal selection for User $userId.", result.exceptionOrNull())
                     }
-                } else {
-                    throw result.exceptionOrNull() ?: Exception("Unknown error saving goal selection.")
                 }
-
             } catch (e: Exception) {
-                Log.e(TAG, "Error saving goal selection for user $userId", e)
+                Log.e(TAG, "Error during goal confirmation process for User $userId", e)
                 withContext(Dispatchers.Main) {
                     _goalSettingState.value = GoalSettingUiState.ERROR
-                    // Consider adding a specific error message StateFlow for the UI
                 }
             }
         }
     } // End confirmGoalSelection
 
-
     // --- Helper Functions ---
+
+    /**
+     * Calculates the start of the day (00:00:00.000) in milliseconds for a given timestamp.
+     * Uses the device's default time zone.
+     * Consider moving to a shared Date/Time utility class if used elsewhere.
+     * @param timestamp The timestamp (epoch milliseconds) for which to find the start of the day.
+     * @return The timestamp representing the start of the day.
+     */
     private fun getStartOfDayTimestamp(timestamp: Long): Long {
         return Calendar.getInstance().apply {
             timeInMillis = timestamp
-            set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
         }.timeInMillis
     }
 
+    /**
+     * Creates a simple Flow that emits Unit periodically. Used to trigger updates
+     * in combination with other flows.
+     * @param period The emission period in milliseconds.
+     * @param initialDelay Optional initial delay before the first emission.
+     * @return A Flow emitting Unit at the specified interval.
+     */
     private fun tickerFlow(period: Long, initialDelay: Long = 0L) = flow {
         delay(initialDelay)
-        while(true) {
+        while (true) {
             emit(Unit)
             delay(period)
         }
     }
 
-    /** Refreshes the target app state from the repository. */
+    /**
+     * Manually triggers a refresh of the target app state from the repository.
+     * Updates the internal `targetAppFlow` if the value has changed,
+     * which will consequently restart the usage collection job.
+     */
     fun refreshTargetApp() {
-        // No userId needed here as it just reads local state via repo/stateManager
-        viewModelScope.launch { // No specific dispatcher needed for reading from repo here
-            val currentTarget = targetAppFlow.value
-            val refreshedTarget = repository.getTargetApp()
-            // Update the flow only if the value has actually changed
-            if (currentTarget != refreshedTarget) {
-                targetAppFlow.value = refreshedTarget
-                Log.d(TAG, "Target app manually refreshed: ${targetAppFlow.value}")
-            } else {
-                Log.d(TAG, "Target app refresh requested but value hasn't changed: $refreshedTarget")
+        viewModelScope.launch {
+            try {
+                val refreshedTarget = repository.getTargetApp()
+                // Update internal flow only if value differs, triggers collector via distinctUntilChanged
+                if (targetAppFlow.value != refreshedTarget) {
+                    targetAppFlow.value = refreshedTarget
+                    Log.i(TAG, "Target app state manually refreshed: ${targetAppFlow.value}")
+                } else {
+                    Log.d(TAG, "Target app refresh requested, but value is unchanged: $refreshedTarget")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error refreshing target app state", e)
             }
         }
     }
 
-    // --- Add Factory for ViewModel Instantiation ---
+    // --- Factory for ViewModel Instantiation ---
     companion object {
+        /**
+         * Provides a [ViewModelProvider.Factory] for creating [HomeViewModel] instances.
+         * Required because the ViewModel has constructor dependencies ([StudyRepository]).
+         * @param repository The [StudyRepository] instance to inject.
+         * @return A factory for creating [HomeViewModel].
+         */
         fun provideFactory(
             repository: StudyRepository
         ): ViewModelProvider.Factory = object : ViewModelProvider.Factory {
@@ -341,7 +434,7 @@ class HomeViewModel(private val repository: StudyRepository) : ViewModel() {
                 if (modelClass.isAssignableFrom(HomeViewModel::class.java)) {
                     return HomeViewModel(repository) as T
                 }
-                throw IllegalArgumentException("Unknown ViewModel class")
+                throw IllegalArgumentException("Unknown ViewModel class: ${modelClass.name}")
             }
         }
     }

@@ -1,13 +1,25 @@
 package com.niyaz.zario.workers
 
 
+import android.Manifest
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.util.Log
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ktx.firestore
 import com.google.firebase.ktx.Firebase
+import com.niyaz.zario.MainActivity
+import com.niyaz.zario.R
 import com.niyaz.zario.StudyPhase
 import com.niyaz.zario.data.local.AppDatabase
 import com.niyaz.zario.data.local.UsageStatDao
@@ -21,8 +33,8 @@ import kotlinx.coroutines.withContext
 /**
  * A periodic [CoroutineWorker] responsible for checking the participant's target app usage
  * against their set goal for the *previous interval*.
- * For testing, this interval is 30 minutes. For production, it would be daily.
- * It calculates point changes, updates the points balance, and saves the outcome locally.
+ * It calculates point changes, updates the points balance, saves the outcome locally,
+ * and now also directly triggers the feedback notification to the user.
  */
 class DailyCheckWorker(appContext: Context, workerParams: WorkerParameters) :
     CoroutineWorker(appContext, workerParams) {
@@ -36,12 +48,17 @@ class DailyCheckWorker(appContext: Context, workerParams: WorkerParameters) :
     private val studyStateManager = StudyStateManager
     private val usageStatDao: UsageStatDao = AppDatabase.getDatabase(appContext).usageStatDao()
     private val firestore: FirebaseFirestore = Firebase.firestore
+    private val notificationManager: NotificationManagerCompat by lazy {
+        NotificationManagerCompat.from(applicationContext)
+    }
 
 
     override suspend fun doWork(): Result {
         val workerStartTimestamp = System.currentTimeMillis()
         Log.i(TAG, "Worker starting execution at $workerStartTimestamp...")
 
+        // Ensure notification channel exists before trying to post a notification
+        createNotificationChannel()
 
         return withContext(Dispatchers.IO) {
             try {
@@ -68,27 +85,14 @@ class DailyCheckWorker(appContext: Context, workerParams: WorkerParameters) :
                 val currentPoints = studyStateManager.getPointsBalance(applicationContext)
                 val (flexEarn, flexLose) = studyStateManager.getFlexStakes(applicationContext)
 
-                if (targetApp == null) {
-                    Log.e(TAG, "Cannot perform check for User $userId: Target app is not set. Returning Success.")
+                if (targetApp == null || dailyGoalMs == null || dailyGoalMs <= 0) {
+                    Log.e(TAG, "Cannot perform check for User $userId: Target app or goal is not set correctly. Returning Success.")
                     return@withContext Result.success()
-                }
-                if (dailyGoalMs == null || dailyGoalMs <= 0) {
-                    Log.e(TAG, "Cannot perform check for User $userId: Goal ($dailyGoalMs) is not set or invalid. Returning Success.")
-                    return@withContext Result.success()
-                }
-                if (condition == StudyPhase.INTERVENTION_FLEXIBLE) {
-                    if (flexEarn == null || flexLose == null || flexEarn !in Constants.FLEX_STAKES_MIN_EARN..Constants.FLEX_STAKES_MAX_EARN || flexLose !in Constants.FLEX_STAKES_MIN_LOSE..Constants.FLEX_STAKES_MAX_LOSE) {
-                        Log.e(TAG, "Cannot perform check for User $userId: Flexible stakes invalid (Earn: $flexEarn, Lose: $flexLose). Returning Success.")
-                        return@withContext Result.success()
-                    }
                 }
 
-                // 1. Calculate Timestamps for the *Previous Interval* based on the worker's own schedule
                 val (intervalStartMs, intervalEndMs) = getPreviousIntervalTimestamps()
                 Log.d(TAG,"Checking usage for previous interval from $intervalStartMs to $intervalEndMs")
 
-                // 2. Query Database for Previous Interval's Usage
-                // MODIFIED to query a time range instead of a specific day
                 val totalUsageMs = usageStatDao.getTotalDurationForAppInRange(
                     userId = userId,
                     packageName = targetApp,
@@ -97,22 +101,15 @@ class DailyCheckWorker(appContext: Context, workerParams: WorkerParameters) :
                 ) ?: 0L
                 Log.i(TAG, "User $userId: Previous interval usage for '$targetApp': ${totalUsageMs / 1000.0} seconds")
 
-                // 3. Compare Usage to Goal
-                // The "daily goal" is now effectively the "per-interval goal" for this testing setup
                 val goalReached = totalUsageMs <= dailyGoalMs
                 Log.i(TAG, "User $userId: Interval goal ($dailyGoalMs ms): ${if (goalReached) "MET" else "MISSED"}")
 
-                // 4. Determine Points Change
                 val pointsChange = calculatePointsChange(condition, goalReached, flexEarn, flexLose)
-
-                // 5. Calculate and Coerce New Points Balance
                 val newPoints = (currentPoints + pointsChange).coerceIn(Constants.MIN_POINTS, Constants.MAX_POINTS)
                 Log.i(TAG, "User $userId: Condition=$condition, GoalReached=$goalReached -> Points change: $pointsChange, New Balance: $newPoints (Prev: $currentPoints)")
 
-                // 6. Save Outcome Locally (for notification)
                 studyStateManager.saveDailyOutcome(applicationContext, workerStartTimestamp, goalReached, pointsChange)
 
-                // 7. Update Points Balance Locally & Remotely (if changed)
                 if (newPoints != currentPoints) {
                     Log.i(TAG, "Points balance changed for User $userId. Updating local state and Firestore...")
                     studyStateManager.savePointsBalance(applicationContext, newPoints)
@@ -126,6 +123,9 @@ class DailyCheckWorker(appContext: Context, workerParams: WorkerParameters) :
                     Log.d(TAG, "Points balance unchanged for User $userId. No updates needed.")
                 }
 
+                // --- NEW: Trigger notification directly from the worker ---
+                showFeedbackNotification(goalReached, pointsChange, newPoints)
+
                 Log.i(TAG, "Worker finished successfully for User $userId.")
                 Result.success()
 
@@ -137,10 +137,62 @@ class DailyCheckWorker(appContext: Context, workerParams: WorkerParameters) :
     }
 
     /**
-     * Calculates the start and end timestamps for the previous check interval.
-     * The interval's length is defined by DEFAULT_CHECK_WORKER_INTERVAL_MS.
-     * @return A Pair where the first element is the start timestamp and the second is the end timestamp.
+     * Shows a notification summarizing the result of the interval evaluation.
      */
+    private fun showFeedbackNotification(goalReached: Boolean, pointsChange: Int, currentBalance: Int) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(applicationContext, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
+        {
+            Log.w(TAG, "Cannot show feedback notification: POST_NOTIFICATIONS permission not granted.")
+            return
+        }
+
+        val title = applicationContext.getString(R.string.notification_daily_feedback_title)
+        val pointsUnit = applicationContext.getString(R.string.points_unit)
+
+        val resultMessage = if (goalReached) {
+            applicationContext.getString(R.string.notification_daily_feedback_success, pointsChange, pointsUnit)
+        } else {
+            applicationContext.getString(R.string.notification_daily_feedback_fail, -pointsChange, pointsUnit)
+        }
+        val fullMessage = resultMessage + " " + applicationContext.getString(R.string.notification_daily_feedback_balance_suffix, currentBalance, pointsUnit)
+
+        val intent = Intent(applicationContext, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+        }
+        val pendingIntent: PendingIntent = PendingIntent.getActivity(
+            applicationContext,
+            Constants.USAGE_TRACKING_DAILY_FEEDBACK_NOTIF_ID, // Use a consistent request code
+            intent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val notification = NotificationCompat.Builder(applicationContext, Constants.USAGE_TRACKING_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_tracking_notification)
+            .setContentTitle(title)
+            .setContentText(fullMessage)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(fullMessage))
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .build()
+
+        notificationManager.notify(Constants.USAGE_TRACKING_DAILY_FEEDBACK_NOTIF_ID, notification)
+        Log.i(TAG, "Feedback notification has been sent.")
+    }
+
+    private fun createNotificationChannel() {
+        val channelId = Constants.USAGE_TRACKING_CHANNEL_ID
+        val channelName = applicationContext.getString(R.string.notification_channel_name)
+        val channelDescription = applicationContext.getString(R.string.notification_channel_description)
+        val importance = NotificationManager.IMPORTANCE_DEFAULT
+        val channel = NotificationChannel(channelId, channelName, importance).apply {
+            description = channelDescription
+        }
+        val manager = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.createNotificationChannel(channel)
+    }
+
     private fun getPreviousIntervalTimestamps(): Pair<Long, Long> {
         val endTimestamp = System.currentTimeMillis()
         val startTimestamp = endTimestamp - Constants.DEFAULT_CHECK_WORKER_INTERVAL_MS

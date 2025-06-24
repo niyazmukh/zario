@@ -44,6 +44,7 @@ class FirestoreSyncWorker(appContext: Context, workerParams: WorkerParameters) :
         // Configuration: Constraints requiring network connectivity
         val WORKER_CONSTRAINTS: Constraints = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.CONNECTED) // Only run when network is available
+            .setRequiresCharging(true) // Only run when the device is charging
             .build()
 
         // Configuration: Default repeat interval (Value taken from Constants for consistency)

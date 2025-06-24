@@ -4,9 +4,10 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.niyaz.zario.data.local.BaselineUsageRecord
 import com.niyaz.zario.data.model.AppBaselineInfo
 import com.niyaz.zario.data.repository.StudyRepository
-import com.niyaz.zario.utils.Constants // Ensure Constants is imported
+import com.niyaz.zario.utils.Constants
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -14,7 +15,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.flow
@@ -25,8 +25,6 @@ import java.time.LocalDateTime
 import java.time.ZoneId
 import java.util.Calendar
 import java.util.concurrent.TimeUnit
-import com.niyaz.zario.data.local.BaselineUsageRecord
-import kotlin.math.max
 
 /**
  * ViewModel for the [com.niyaz.zario.ui.screens.HomeScreen].
@@ -138,22 +136,14 @@ class HomeViewModel(private val repository: StudyRepository) : ViewModel() {
                 val todayStartMs = getStartOfDayTimestamp(System.currentTimeMillis())
                 Log.d(TAG, "Starting usage collection for User $userId, App: $currentTarget, DayStart: $todayStartMs")
 
-                // Combine the database flow with a periodic ticker.
-                // The ticker ensures the UI potentially updates even if the underlying DB value
-                // doesn't change frequently, providing a sense of live-ness.
-                // A simpler alternative might rely solely on Room's flow emissions if precise
-                // real-time updates are less critical.
-                combine(
-                    repository.getTodayUsageForAppFlow(userId, currentTarget, todayStartMs),
-                    tickerFlow(TimeUnit.MINUTES.toMillis(1)) // Ticker interval (e.g., 1 minute)
-                ) { usage, _ -> usage } // Combine logic: just take the usage value from the DB flow
+                // SIMPLIFY THE FLOW: Remove the combine() and tickerFlow()
+                repository.getTodayUsageForAppFlow(userId, currentTarget, todayStartMs)
                     .catch { e -> Log.e(TAG, "Error collecting today's usage flow for User $userId, App $currentTarget", e) }
-                    .distinctUntilChanged() // Avoid redundant updates
+                    .distinctUntilChanged()
                     .collect { usage ->
                         val currentUsage = usage ?: 0L
                         if (_todayUsageMs.value != currentUsage) {
                             _todayUsageMs.value = currentUsage
-                            // Log only when the value actually changes
                             Log.v(TAG, "Updated todayUsageMs for User $userId, App $currentTarget: $currentUsage ms")
                         }
                     }

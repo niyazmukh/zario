@@ -8,6 +8,7 @@ import java.util.concurrent.TimeUnit
  */
 object Constants {
 
+
     // --- SharedPreferences ---
     const val PREFS_NAME = "ZarioStudyStatePrefs"
     const val KEY_USER_ID = "user_id"
@@ -23,6 +24,8 @@ object Constants {
     const val KEY_LAST_DAY_GOAL_REACHED = "last_day_goal_reached"
     const val KEY_LAST_DAY_POINTS_CHANGE = "last_day_points_change"
     const val KEY_FLEX_STAKES_SET_BY_USER = "flex_stakes_set_by_user"
+
+
 
 
     // --- Firestore ---
@@ -42,13 +45,14 @@ object Constants {
     const val FIRESTORE_FIELD_FLEX_EARN = "flexPointsEarn"
     const val FIRESTORE_FIELD_FLEX_LOSE = "flexPointsLose"
 
+
     // --- Study Logic ---
-    // Durations (configurable for testing by changing TimeUnit)
-    //val BASELINE_DURATION_MS: Long = TimeUnit.DAYS.toMillis(7)
-    val BASELINE_DURATION_MS: Long = TimeUnit.MINUTES.toMillis(30) // Example: 5 minutes for testing
-    val GOAL_SETTING_TIMEOUT_MS: Long = TimeUnit.DAYS.toMillis(2) // Example: Max time to set goal
+    // Durations for testing
+    val BASELINE_DURATION_MS: Long = TimeUnit.MINUTES.toMillis(30) // 30-minute baseline for testing.
+    //val GOAL_SETTING_TIMEOUT_MS: Long = TimeUnit.DAYS.toMillis(2) // Max time to set goal
     const val GOAL_REDUCTION_FACTOR = 0.80 // Target is 80% of baseline (20% reduction)
     val MINIMUM_GOAL_DURATION_MS: Long = TimeUnit.MINUTES.toMillis(1) // Minimum allowed goal (e.g., 1 minute)
+
 
     // Points System
     const val INITIAL_POINTS = 100
@@ -63,42 +67,46 @@ object Constants {
     const val FLEX_STAKES_MIN_LOSE = 0
     const val FLEX_STAKES_MAX_LOSE = 40
 
+
     // --- Usage Tracking Service ---
     const val USAGE_TRACKING_CHANNEL_ID = "com.niyaz.zario.TRACKING_CHANNEL"
     const val USAGE_TRACKING_FOREGROUND_NOTIF_ID = 1
     const val USAGE_TRACKING_DAILY_FEEDBACK_NOTIF_ID = 2
     const val USAGE_TRACKING_WARN_90_NOTIF_ID = 3
     const val USAGE_TRACKING_LIMIT_100_NOTIF_ID = 4
-    // Interval (configurable for testing)
+    // Interval for foreground app checking
     val USAGE_TRACKING_INTERVAL_MS: Long = TimeUnit.MINUTES.toMillis(1) // Check every 1 minute
-    // val USAGE_TRACKING_INTERVAL_MS: Long = TimeUnit.SECONDS.toMillis(10) // Example: 10 seconds for testing
     val USAGE_TRACKING_MIN_SAVE_DURATION_MS: Long = TimeUnit.SECONDS.toMillis(1) // Min duration to save to DB (e.g., 1 sec)
+
 
     // --- Daily Check Worker ---
     const val DAILY_CHECK_WORKER_NAME = "ZarioDailyCheck"
-    // Interval (configurable for testing)
-    //val DEFAULT_CHECK_WORKER_INTERVAL_MS: Long = TimeUnit.HOURS.toMillis(1) // Run check worker hourly
-    val DEFAULT_CHECK_WORKER_INTERVAL_MS: Long = TimeUnit.MINUTES.toMillis(2) // Example: 2 minutes for testing
+    // Interval for goal checking. For testing, this is set to 30 minutes.
+    val DEFAULT_CHECK_WORKER_INTERVAL_MS: Long = TimeUnit.MINUTES.toMillis(30) // Run check worker every 30 minutes.
+
 
     // --- Firestore Sync Worker ---
     const val FIRESTORE_SYNC_WORKER_NAME = "ZarioFirestoreSync"
-    // Interval (configurable for testing)
-    //val FIRESTORE_SYNC_INTERVAL_MS: Long = TimeUnit.HOURS.toMillis(1) // Run sync every 1 hours
-    val FIRESTORE_SYNC_INTERVAL_MS: Long = TimeUnit.MINUTES.toMillis(3) // Example: 3 minutes for testing
+    // Interval for syncing local data to the server.
+    val FIRESTORE_SYNC_INTERVAL_MS: Long = TimeUnit.MINUTES.toMillis(5) // Run sync every 5 minutes for testing.
     const val FIRESTORE_SYNC_BATCH_SIZE = 100 // Records per sync batch
+
 
     // --- Authentication & Registration Validation ---
     const val MIN_PASSWORD_LENGTH = 8
     const val MIN_BIRTH_YEAR = 1900
     // Implicit MAX_BIRTH_YEAR is current year, handled in validation logic
 
+
     // --- Goal Setting UI ---
     const val GOAL_SETTING_APP_ICON_COUNT = 4 // Number of app icons to show
     // Implicit 90% / 100% thresholds used in UsageTrackingService notification logic
+
 
     // --- Flexible Deposit Setup UI ---
     const val DEFAULT_FLEX_EARN_SLIDER_VALUE = 5f // Default slider position (matches points)
     const val DEFAULT_FLEX_LOSE_SLIDER_VALUE = 20f // Default slider position (matches points)
     // Slider steps derived from MIN/MAX constants in UI logic
+
 
 }

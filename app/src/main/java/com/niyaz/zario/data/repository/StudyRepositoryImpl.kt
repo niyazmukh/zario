@@ -1,5 +1,6 @@
 package com.niyaz.zario.data.repository
 
+
 import android.content.Context
 import android.util.Log
 import com.google.firebase.firestore.FirebaseFirestore
@@ -21,6 +22,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 
+
 /**
  * Concrete implementation of the [StudyRepository] interface.
  * Manages data access and persistence logic, coordinating between local sources
@@ -37,10 +39,13 @@ class StudyRepositoryImpl(
     private val firestore: FirebaseFirestore = Firebase.firestore // Default instance
 ) : StudyRepository {
 
+
     private val TAG = "StudyRepositoryImpl" // Class Tag for Logging
+
 
     // Helper to get current user ID safely from local state
     private fun getCurrentUserId(): String? = StudyStateManager.getUserId(context)
+
 
     // Helper to update single Firestore field safely
     private suspend fun updateFirestoreField(userId: String, field: String, value: Any?): Boolean {
@@ -56,6 +61,7 @@ class StudyRepositoryImpl(
         }
     }
 
+
     // Helper to update multiple Firestore fields safely
     private suspend fun updateFirestoreFields(userId: String, data: Map<String, Any?>): Boolean {
         return try {
@@ -70,9 +76,12 @@ class StudyRepositoryImpl(
         }
     }
 
+
     // --- User Session & Identification ---
 
+
     override fun getUserId(): String? = StudyStateManager.getUserId(context)
+
 
     override suspend fun saveUserId(userId: String) {
         // SharedPreferences writes are fast but perform on IO dispatcher for consistency
@@ -81,9 +90,12 @@ class StudyRepositoryImpl(
         }
     }
 
+
     // --- Study State Management ---
 
+
     override fun getStudyPhase(): StudyPhase = StudyStateManager.getStudyPhase(context)
+
 
     override suspend fun saveStudyPhase(phase: StudyPhase) {
         withContext(Dispatchers.IO) {
@@ -95,7 +107,9 @@ class StudyRepositoryImpl(
         }
     }
 
+
     override fun getStudyStartTimestamp(): Long = StudyStateManager.getStudyStartTimestamp(context)
+
 
     override suspend fun saveStudyStartTimestamp(timestamp: Long) {
         withContext(Dispatchers.IO) {
@@ -107,7 +121,9 @@ class StudyRepositoryImpl(
         }
     }
 
+
     override fun getCondition(): StudyPhase? = StudyStateManager.getCondition(context)
+
 
     override suspend fun saveCondition(condition: StudyPhase) {
         withContext(Dispatchers.IO) {
@@ -123,7 +139,9 @@ class StudyRepositoryImpl(
         }
     }
 
+
     override fun getTargetApp(): String? = StudyStateManager.getTargetApp(context)
+
 
     override suspend fun saveTargetApp(packageName: String?) {
         withContext(Dispatchers.IO) {
@@ -135,7 +153,9 @@ class StudyRepositoryImpl(
         }
     }
 
+
     override fun getDailyGoalMs(): Long? = StudyStateManager.getDailyGoalMs(context)
+
 
     override suspend fun saveDailyGoalMs(goalMs: Long?) {
         withContext(Dispatchers.IO) {
@@ -147,7 +167,9 @@ class StudyRepositoryImpl(
         }
     }
 
+
     override fun getPointsBalance(): Int = StudyStateManager.getPointsBalance(context)
+
 
     override suspend fun savePointsBalance(points: Int) {
         withContext(Dispatchers.IO) {
@@ -160,7 +182,9 @@ class StudyRepositoryImpl(
         }
     }
 
+
     override fun getFlexStakes(): Pair<Int?, Int?> = StudyStateManager.getFlexStakes(context)
+
 
     override suspend fun saveFlexStakes(earn: Int, lose: Int) {
         withContext(Dispatchers.IO) {
@@ -175,20 +199,26 @@ class StudyRepositoryImpl(
         }
     }
 
+
     // --- Implementations for Flex Stakes Flag ---
     override fun getFlexStakesSetByUser(): Boolean = StudyStateManager.getFlexStakesSetByUser(context)
 
+
     override suspend fun saveFlexStakesSetByUser(hasSet: Boolean) {
-        // Only needs to save locally via StudyStateManager for now.
-        // If this flag needs to be synced/fetched, add Firestore logic here too.
         withContext(Dispatchers.IO) {
+            // Persist the flag both locally and remotely to ensure state is consistent
+            // across app sessions and reinstalls.
             StudyStateManager.saveFlexStakesSetByUser(context, hasSet)
-            // Optional: Update Firestore if this state needs to persist across devices/reinstalls
-            // getCurrentUserId()?.let { updateFirestoreField(it, Constants.KEY_FLEX_STAKES_SET_BY_USER, hasSet) }
+            getCurrentUserId()?.let { userId ->
+                // Use the same key used during initialization and fetch for consistency.
+                updateFirestoreField(userId, Constants.KEY_FLEX_STAKES_SET_BY_USER, hasSet)
+            }
         }
     }
 
+
     override fun getLastDailyOutcome(): Triple<Long?, Boolean?, Int?> = StudyStateManager.getLastDailyOutcome(context)
+
 
     override suspend fun saveDailyOutcome(checkTimestamp: Long, goalReached: Boolean, pointsChange: Int) {
         // Local state only, no Firestore interaction needed here
@@ -197,9 +227,12 @@ class StudyRepositoryImpl(
         }
     }
 
+
     // Uses StudyStateManager which internally uses constants now
     override suspend fun fetchAndSaveStateFromFirestore(userId: String): Boolean =
         StudyStateManager.fetchAndSaveStateFromFirestore(context, userId) // Already handles await and Firestore access
+
+
 
 
     override suspend fun clearStudyState() {
@@ -209,7 +242,9 @@ class StudyRepositoryImpl(
         }
     }
 
+
     // --- User Profile Data (Firestore Only) ---
+
 
     override suspend fun saveUserProfile(userId: String, userData: Map<String, Any?>): Result<Unit> {
         return withContext(Dispatchers.IO) {
@@ -227,7 +262,9 @@ class StudyRepositoryImpl(
         }
     }
 
+
     // --- Usage Statistics (Room Database) ---
+
 
     override suspend fun insertUsageStat(usageStat: UsageStatEntity) {
         withContext(Dispatchers.IO) {
@@ -240,6 +277,7 @@ class StudyRepositoryImpl(
         }
     }
 
+
     override suspend fun insertAllUsageStats(usageStats: List<UsageStatEntity>) {
         withContext(Dispatchers.IO) {
             try {
@@ -251,6 +289,7 @@ class StudyRepositoryImpl(
         }
     }
 
+
     // DAO Queries inherently run on IO dispatcher when called from appropriate scope (e.g., worker, viewModelScope)
     // Adding explicit withContext here provides defense-in-depth if called from Main thread unexpectedly.
     override suspend fun getTotalDurationForAppOnDay(userId: String, packageName: String, dayTimestamp: Long): Long? =
@@ -258,20 +297,25 @@ class StudyRepositoryImpl(
             usageStatDao.getTotalDurationForAppOnDay(userId, packageName, dayTimestamp)
         }
 
+
     override suspend fun getTotalDurationForAppInRange(userId: String, packageName: String, startTime: Long, endTime: Long): Long? =
         withContext(Dispatchers.IO) {
             usageStatDao.getTotalDurationForAppInRange(userId, packageName, startTime, endTime)
         }
 
+
     // Flows are collected on the caller's context, no withContext needed here
     override fun getUsageStatsForDayFlow(userId: String, dayTimestamp: Long): Flow<List<UsageStatEntity>> =
         usageStatDao.getUsageStatsForDayFlow(userId, dayTimestamp)
 
+
     override fun getAggregatedDailyDurationForAppFlow(userId: String, packageName: String): Flow<List<DailyDuration>> =
         usageStatDao.getAggregatedDailyDurationForAppFlow(userId, packageName)
 
+
     override fun getTodayUsageForAppFlow(userId: String, packageName: String, todayDayTimestamp: Long): Flow<Long?> =
         usageStatDao.getTodayUsageForAppFlow(userId, packageName, todayDayTimestamp)
+
 
     override suspend fun getAggregatedUsageForBaseline(userId: String, startTime: Long, endTime: Long, minTotalDurationMs: Long): List<AppUsageBaseline> =
         withContext(Dispatchers.IO) {
@@ -279,12 +323,15 @@ class StudyRepositoryImpl(
             usageStatDao.getAggregatedUsageForBaseline(userId, startTime, endTime, minTotalDurationMs.coerceAtLeast(Constants.USAGE_TRACKING_MIN_SAVE_DURATION_MS))
         }
 
+
     override suspend fun getAllUsageRecordsForBaseline(userId: String, startTime: Long, endTime: Long): List<BaselineUsageRecord> =
         withContext(Dispatchers.IO) {
             usageStatDao.getAllUsageRecordsForBaseline(userId, startTime, endTime)
         }
 
+
     // --- Application Information (AppInfoHelper) ---
+
 
     override suspend fun getAppDetails(packageName: String): AppBaselineInfo {
         // AppInfoHelper might access PackageManager, better to keep on IO dispatcher
@@ -300,7 +347,9 @@ class StudyRepositoryImpl(
         }
     }
 
+
     // --- Combined High-Level Operations ---
+
 
     override suspend fun confirmGoalSelection(userId: String, selectedAppPkg: String, calculatedGoalMs: Long): Result<Unit> {
         return withContext(Dispatchers.IO) {
@@ -310,10 +359,12 @@ class StudyRepositoryImpl(
                 return@withContext Result.failure(IllegalStateException("Cannot confirm goal: Invalid condition state."))
             }
 
+
             // 1. Persist locally first (using repository methods ensures consistency)
             saveTargetApp(selectedAppPkg) // Persists locally + schedules Firestore update via helper
             saveDailyGoalMs(calculatedGoalMs) // Persists locally + schedules Firestore update via helper
             saveStudyPhase(condition) // Transition phase locally + schedules Firestore update via helper
+
 
             // 2. Perform a *direct* Firestore update to ensure atomicity for this specific operation
             // This overwrites updates potentially scheduled by the individual save methods above,
@@ -324,8 +375,10 @@ class StudyRepositoryImpl(
                 Constants.FIRESTORE_FIELD_STUDY_PHASE to condition.name // Use the locally retrieved condition
             )
 
+
             // Use the helper function for the atomic update
             val firestoreSuccess = updateFirestoreFields(userId, updateData)
+
 
             if (firestoreSuccess) {
                 Log.i(TAG,"Goal selection confirmed and persisted for user $userId.")
@@ -338,6 +391,7 @@ class StudyRepositoryImpl(
             }
         }
     }
+
 
     override suspend fun initializeNewUser(
         userId: String,
@@ -353,11 +407,13 @@ class StudyRepositoryImpl(
             val profileDataWithFlag = userProfileData.toMutableMap()
             profileDataWithFlag.putIfAbsent(Constants.KEY_FLEX_STAKES_SET_BY_USER, false) // Add flag if not present
 
+
             val profileResult = saveUserProfile(userId, profileDataWithFlag) // Save updated map
             if (profileResult.isFailure) {
                 throw profileResult.exceptionOrNull() ?: Exception("Failed to save user profile to Firestore.")
             }
             Log.d(TAG, "Firestore document successfully written for new user: $userId")
+
 
             // Step 2: Save initial state locally using Repository methods
             saveUserId(userId)
@@ -371,8 +427,10 @@ class StudyRepositoryImpl(
             saveFlexStakesSetByUser(false) // <<< EXPLICITLY Set flag to false locally
             saveDailyOutcome(0L, false, 0)
 
+
             Log.d(TAG, "Local state initialized via Repository for new user: $userId")
             Result.success(Unit)
+
 
         } catch (e: Exception) {
             Log.e(TAG, "Failed to initialize new user $userId (Firestore or Local save)", e)

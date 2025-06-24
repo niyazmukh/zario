@@ -22,6 +22,8 @@ object Constants {
     const val KEY_LAST_DAILY_CHECK_TIMESTAMP = "last_daily_check_timestamp"
     const val KEY_LAST_DAY_GOAL_REACHED = "last_day_goal_reached"
     const val KEY_LAST_DAY_POINTS_CHANGE = "last_day_points_change"
+    const val KEY_FLEX_STAKES_SET_BY_USER = "flex_stakes_set_by_user"
+
 
     // --- Firestore ---
     const val FIRESTORE_COLLECTION_USERS = "users"

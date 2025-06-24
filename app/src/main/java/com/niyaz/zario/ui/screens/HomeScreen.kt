@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -59,6 +60,7 @@ import com.niyaz.zario.workers.FirestoreSyncWorker
 import kotlinx.coroutines.launch
 import java.util.concurrent.TimeUnit
 
+
 /**
  * The main screen of the application displayed after successful authentication.
  * (KDoc remains the same)
@@ -68,8 +70,8 @@ fun HomeScreen(navController: NavController) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val workManager = WorkManager.getInstance(context)
-    val coroutineScope = rememberCoroutineScope() // <<< Define scope for suspend function calls
-    val TAG = "HomeScreen"
+    val coroutineScope = rememberCoroutineScope()
+    val TAG = "HomeScreen" // Logging Tag
 
     // --- Instantiate Repository and ViewModel ---
     val repository: StudyRepository = remember {
@@ -102,7 +104,8 @@ fun HomeScreen(navController: NavController) {
     val permissionsGranted = hasUsageStatsPermission && hasNotificationPermission
     var currentStudyPhase by remember { mutableStateOf(StudyStateManager.getStudyPhase(context)) }
     var flexibleStakes by remember { mutableStateOf(StudyStateManager.getFlexStakes(context)) }
-    val needsFlexSetup = currentStudyPhase == StudyPhase.INTERVENTION_FLEXIBLE && flexibleStakes.first == null
+    var flexStakesSetByUser by remember { mutableStateOf(StudyStateManager.getFlexStakesSetByUser(context)) }
+    val needsFlexSetup = currentStudyPhase == StudyPhase.INTERVENTION_FLEXIBLE && !flexStakesSetByUser
 
     // --- Permission Launchers ---
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
@@ -141,43 +144,94 @@ fun HomeScreen(navController: NavController) {
         }
     }
 
-    // Effect to Re-check Permissions and State on Lifecycle Resume
-    DisposableEffect(lifecycleOwner) {
+    // --- Effect to Re-check Permissions, State (including new flag) on Resume ---
+    DisposableEffect(lifecycleOwner, repository, homeViewModel) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 Log.d(TAG, "Lifecycle ON_RESUME: Re-checking permissions and state.")
+
+                // Re-check permissions
                 hasUsageStatsPermission = PermissionsUtils.hasUsageStatsPermission(context)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     hasNotificationPermission = ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == android.content.pm.PackageManager.PERMISSION_GRANTED
                 }
+
+                // Refresh local state display variable from StudyStateManager
                 val refreshedPhase = StudyStateManager.getStudyPhase(context)
-                if (currentStudyPhase != refreshedPhase) {
-                    Log.i(TAG, "Study phase changed on resume: $currentStudyPhase -> $refreshedPhase")
-                    currentStudyPhase = refreshedPhase
-                    if (refreshedPhase == StudyPhase.GOAL_SETTING && goalSettingState == HomeViewModel.GoalSettingUiState.IDLE) {
-                        homeViewModel.loadBaselineData()
+                flexibleStakes = StudyStateManager.getFlexStakes(context) // Refresh flex stakes
+                flexStakesSetByUser = StudyStateManager.getFlexStakesSetByUser(context) // <<< REFRESH Flag
+
+
+                // *** FIX: Check for Baseline Completion HERE ***
+                if (refreshedPhase == StudyPhase.BASELINE) {
+                    val startTime = StudyStateManager.getStudyStartTimestamp(context)
+                    val baselineDurationMs = Constants.BASELINE_DURATION_MS
+                    val currentTime = System.currentTimeMillis()
+
+                    if (startTime > 0 && currentTime >= (startTime + baselineDurationMs)) {
+                        // Baseline duration HAS passed! Trigger transition.
+                        Log.i(TAG, "Baseline duration check on RESUME: Duration PASSED ($currentTime >= ${startTime + baselineDurationMs}). Transitioning to GOAL_SETTING.")
+                        val goalSettingPhase = StudyPhase.GOAL_SETTING
+
+                        // Update local state variable FIRST for immediate UI effect (if needed, depends on UI structure)
+                        currentStudyPhase = goalSettingPhase
+
+                        // Launch coroutine to perform suspend operations (update state + load data)
+                        coroutineScope.launch {
+                            try {
+                                // Persist the phase change locally and remotely
+                                repository.saveStudyPhase(goalSettingPhase)
+                                Log.i(TAG,"Successfully saved phase change to GOAL_SETTING.")
+                                // Trigger loading of baseline data for the Goal Setting screen
+                                homeViewModel.loadBaselineData()
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Error saving phase change or loading baseline data on resume transition.", e)
+                                // Handle error if needed, potentially revert local phase change?
+                                // For now, logging the error. UI might be slightly inconsistent if Firestore fails.
+                            }
+                        }
+                        // NOTE: The `currentStudyPhase = goalSettingPhase` above ensures the UI *tries* to switch.
+                        // The actual phase used in the `when` block later will be this updated value.
+                    } else {
+                        // Baseline duration not yet passed
+                        Log.d(TAG, "Baseline duration check on RESUME: Duration NOT YET passed ($currentTime < ${startTime + baselineDurationMs}). Staying in BASELINE.")
+                        // If phase hasn't changed locally, update `currentStudyPhase`
+                        if (currentStudyPhase != refreshedPhase) {
+                            currentStudyPhase = refreshedPhase
+                        }
+                    }
+                } else {
+                    // Not in baseline phase, just update local state variable if it changed
+                    if (currentStudyPhase != refreshedPhase) {
+                        Log.i(TAG, "Study phase changed on resume: $currentStudyPhase -> $refreshedPhase")
+                        currentStudyPhase = refreshedPhase
+                        // If phase changed TO goal setting (e.g., from remote fetch), ensure load triggered
+                        if (refreshedPhase == StudyPhase.GOAL_SETTING && goalSettingState == HomeViewModel.GoalSettingUiState.IDLE) {
+                            homeViewModel.loadBaselineData()
+                        }
                     }
                 }
-                flexibleStakes = StudyStateManager.getFlexStakes(context)
+                // *** END FIX ***
+
+                // Refresh target app in ViewModel (remains unchanged)
                 homeViewModel.refreshTargetApp()
-            }
+            } // End ON_RESUME
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
+    } // End DisposableEffect
 
     // Effect to Start/Stop Usage Tracking Service based on Permissions and Phase
     LaunchedEffect(permissionsGranted, currentStudyPhase) {
-        val shouldBeTracking = permissionsGranted && (currentStudyPhase == StudyPhase.BASELINE || currentStudyPhase.name.startsWith("INTERVENTION"))
+        val shouldBeTracking = currentStudyPhase == StudyPhase.BASELINE || currentStudyPhase.name.startsWith("INTERVENTION")
         val serviceIntent = Intent(context, UsageTrackingService::class.java)
         if (shouldBeTracking) {
-            Log.i(TAG, "Conditions met (Permissions=$permissionsGranted, Phase=$currentStudyPhase). Ensuring UsageTrackingService is started.")
+            Log.i(TAG, "Conditions met (Permissions=true, Phase=$currentStudyPhase). Ensuring UsageTrackingService is started.")
             try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) { context.startForegroundService(serviceIntent) }
-                else { context.startService(serviceIntent) }
+                context.startForegroundService(serviceIntent)
             } catch (e: Exception) { Log.e(TAG, "Failed to start UsageTrackingService: ${e.message}", e) }
         } else {
-            Log.i(TAG, "Conditions not met (Permissions=$permissionsGranted, Phase=$currentStudyPhase). Ensuring UsageTrackingService is stopped.")
+            Log.i(TAG, "Conditions not met (Permissions=true, Phase=$currentStudyPhase). Ensuring UsageTrackingService is stopped.")
             try { context.stopService(serviceIntent) }
             catch (e: Exception) { Log.e(TAG, "Error stopping UsageTrackingService: ${e.message}", e) }
         }
@@ -215,9 +269,13 @@ fun HomeScreen(navController: NavController) {
                     // *** CORRECTION: Launch suspend function in coroutine scope ***
                     coroutineScope.launch {
                         repository.saveFlexStakes(earn, lose)
+                        repository.saveFlexStakesSetByUser(true) // <<< SET Flag to true
+
                     }
                     // *** END CORRECTION ***
                     flexibleStakes = Pair(earn, lose)
+                    flexStakesSetByUser = true // <<< UPDATE Local Flag State
+
                 }
             } else {
                 // Permissions ok, route by phase
@@ -230,21 +288,52 @@ fun HomeScreen(navController: NavController) {
                 when (currentStudyPhase) {
                     StudyPhase.BASELINE -> BaselinePhaseUI()
                     StudyPhase.GOAL_SETTING -> {
-                        // Goal Setting UI logic (remains unchanged)
+                        // --- FIX: Implement UI for all GoalSetting states ---
                         when (goalSettingState) {
-                            HomeViewModel.GoalSettingUiState.IDLE, HomeViewModel.GoalSettingUiState.LOADING -> {/* Loading UI */}
-                            HomeViewModel.GoalSettingUiState.ERROR -> { /* Error UI */ }
-                            HomeViewModel.GoalSettingUiState.LOADED, HomeViewModel.GoalSettingUiState.SAVING -> {
-                                GoalSettingPhaseContent(
+                            HomeViewModel.GoalSettingUiState.IDLE,
+                            HomeViewModel.GoalSettingUiState.LOADING -> {
+                                // Show loading indicator centered
+                                Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text(stringResource(R.string.goal_setting_loading_title), style = MaterialTheme.typography.titleLarge)
+                                    Spacer(modifier = Modifier.height(16.dp))
+                                    CircularProgressIndicator() // <<< ADDED Loading UI
+                                }
+                            }
+                            HomeViewModel.GoalSettingUiState.ERROR -> {
+                                // Show error message and retry button centered
+                                Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text(stringResource(R.string.goal_setting_error_title), style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.error)
+                                    Spacer(modifier = Modifier.height(16.dp))
+                                    Text(stringResource(R.string.goal_setting_error_message), textAlign = TextAlign.Center)
+                                    Spacer(modifier = Modifier.height(16.dp))
+                                    Button(onClick = { homeViewModel.loadBaselineData() }) { // <<< ADDED Error UI + Retry
+                                        Text(stringResource(R.string.goal_setting_retry_button))
+                                    }
+                                }
+                            }
+                            HomeViewModel.GoalSettingUiState.LOADED,
+                            HomeViewModel.GoalSettingUiState.SAVING -> {
+                                // Show the actual Goal Setting content UI
+                                GoalSettingPhaseContent( // This was already correct
                                     isLoading = (goalSettingState == HomeViewModel.GoalSettingUiState.SAVING),
-                                    suggestedApp = suggestedApp, baselineAppList = baselineAppList,
+                                    suggestedApp = suggestedApp,
+                                    baselineAppList = baselineAppList,
                                     hourlyUsageData = hourlyData,
-                                    onConfirmGoal = { homeViewModel.confirmGoalSelection(it) }
+                                    onConfirmGoal = { selectedApp ->
+                                        homeViewModel.confirmGoalSelection(selectedApp)
+                                    }
                                 )
                             }
-                            HomeViewModel.GoalSettingUiState.SAVED -> { /* Saved UI */ }
+                            HomeViewModel.GoalSettingUiState.SAVED -> {
+                                // Brief "Saved" message - UI will recompose shortly due to phase change
+                                Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text(stringResource(R.string.goal_setting_saved_title), style = MaterialTheme.typography.titleLarge) // <<< ADDED Saved UI
+                                }
+                            }
                         } // End when(goalSettingState)
+                        // --- END FIX ---
                     } // End GOAL_SETTING case
+
                     StudyPhase.INTERVENTION_CONTROL, StudyPhase.INTERVENTION_DEPOSIT, StudyPhase.INTERVENTION_FLEXIBLE -> {
                         InterventionPhaseUI(
                             currentPhase = currentStudyPhase,

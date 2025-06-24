@@ -103,6 +103,20 @@ interface StudyRepository {
     suspend fun saveFlexStakes(earn: Int, lose: Int)
 
     /**
+     * Gets the flag indicating whether the user has explicitly set their flexible stakes.
+     * Reads from local storage.
+     * @return True if stakes have been set by the user, false otherwise.
+     */
+    fun getFlexStakesSetByUser(): Boolean
+
+    /**
+     * Saves the flag indicating whether the user has explicitly set their flexible stakes.
+     * Persists the flag to local storage. Optionally could update Firestore if needed elsewhere.
+     * @param hasSet True to indicate stakes have been set, false otherwise.
+     */
+    suspend fun saveFlexStakesSetByUser(hasSet: Boolean)
+
+    /**
      * Gets the outcome of the *previous* day's goal check from local storage.
      * Used primarily to display feedback notifications.
      * @return A Triple containing: the timestamp of the check, whether the goal was reached, and the points change applied. Returns nulls if no outcome saved.

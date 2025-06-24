@@ -175,6 +175,19 @@ class StudyRepositoryImpl(
         }
     }
 
+    // --- Implementations for Flex Stakes Flag ---
+    override fun getFlexStakesSetByUser(): Boolean = StudyStateManager.getFlexStakesSetByUser(context)
+
+    override suspend fun saveFlexStakesSetByUser(hasSet: Boolean) {
+        // Only needs to save locally via StudyStateManager for now.
+        // If this flag needs to be synced/fetched, add Firestore logic here too.
+        withContext(Dispatchers.IO) {
+            StudyStateManager.saveFlexStakesSetByUser(context, hasSet)
+            // Optional: Update Firestore if this state needs to persist across devices/reinstalls
+            // getCurrentUserId()?.let { updateFirestoreField(it, Constants.KEY_FLEX_STAKES_SET_BY_USER, hasSet) }
+        }
+    }
+
     override fun getLastDailyOutcome(): Triple<Long?, Boolean?, Int?> = StudyStateManager.getLastDailyOutcome(context)
 
     override suspend fun saveDailyOutcome(checkTimestamp: Long, goalReached: Boolean, pointsChange: Int) {
@@ -335,27 +348,27 @@ class StudyRepositoryImpl(
         registrationTimestamp: Long
     ): Result<Unit> = withContext(Dispatchers.IO) {
         try {
-            // Step 1: Save profile data to Firestore using the dedicated method
-            val profileResult = saveUserProfile(userId, userProfileData)
+            // Step 1: Save profile data to Firestore
+            // Ensure the profile data includes the new flag, defaulting to false
+            val profileDataWithFlag = userProfileData.toMutableMap()
+            profileDataWithFlag.putIfAbsent(Constants.KEY_FLEX_STAKES_SET_BY_USER, false) // Add flag if not present
+
+            val profileResult = saveUserProfile(userId, profileDataWithFlag) // Save updated map
             if (profileResult.isFailure) {
-                // If Firestore save fails, propagate the failure immediately
                 throw profileResult.exceptionOrNull() ?: Exception("Failed to save user profile to Firestore.")
             }
             Log.d(TAG, "Firestore document successfully written for new user: $userId")
 
-            // Step 2: Save initial state locally using StudyStateManager via repository methods
-            // (This ensures local state matches the profile just saved to Firestore)
+            // Step 2: Save initial state locally using Repository methods
             saveUserId(userId)
-            saveStudyPhase(initialPhase) // Writes to local state + schedules Firestore update (benign overwrite)
-            saveCondition(assignedCondition) // Writes to local state + schedules Firestore update (benign overwrite)
-            savePointsBalance(initialPoints) // Writes to local state + schedules Firestore update (benign overwrite)
-            saveStudyStartTimestamp(registrationTimestamp) // Writes to local state + schedules Firestore update (benign overwrite)
-            // Ensure other potentially relevant states are cleared/defaulted locally
-            saveTargetApp(null) // Clears locally + schedules Firestore update (benign overwrite)
-            saveDailyGoalMs(null) // Clears locally + schedules Firestore update (benign overwrite)
-            // Save default flex stakes locally (Firestore update benign if not flex condition)
+            saveStudyPhase(initialPhase)
+            saveCondition(assignedCondition)
+            savePointsBalance(initialPoints)
+            saveStudyStartTimestamp(registrationTimestamp)
+            saveTargetApp(null)
+            saveDailyGoalMs(null)
             saveFlexStakes(Constants.FLEX_STAKES_MIN_EARN, Constants.FLEX_STAKES_MIN_LOSE)
-            // Clear previous day outcome locally (no Firestore interaction)
+            saveFlexStakesSetByUser(false) // <<< EXPLICITLY Set flag to false locally
             saveDailyOutcome(0L, false, 0)
 
             Log.d(TAG, "Local state initialized via Repository for new user: $userId")
@@ -363,7 +376,6 @@ class StudyRepositoryImpl(
 
         } catch (e: Exception) {
             Log.e(TAG, "Failed to initialize new user $userId (Firestore or Local save)", e)
-            // Let the caller (e.g., AuthScreen) handle cleanup like deleting the Auth user
             Result.failure(e)
         }
     }

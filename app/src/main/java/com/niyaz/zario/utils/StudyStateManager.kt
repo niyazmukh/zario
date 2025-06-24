@@ -21,6 +21,9 @@ object StudyStateManager {
     // TAG for logging
     private const val TAG = "StudyStateManager"
 
+    private const val KEY_FLEX_STAKES_SET_BY_USER = Constants.KEY_FLEX_STAKES_SET_BY_USER
+
+
     // Private helper to get SharedPreferences instance
     private fun getPreferences(context: Context): SharedPreferences {
         // Use constant for prefs name
@@ -233,6 +236,29 @@ object StudyStateManager {
         return Pair(earn, lose)
     }
 
+    // --- NEW: Flexible Stakes User Confirmation Flag ---
+
+    /**
+     * Saves a flag indicating whether the user has explicitly confirmed their flexible stakes.
+     * @param context The application context.
+     * @param hasSet True if the user has confirmed, false otherwise (e.g., on initialization).
+     */
+    fun saveFlexStakesSetByUser(context: Context, hasSet: Boolean) {
+        getPreferences(context).edit().putBoolean(KEY_FLEX_STAKES_SET_BY_USER, hasSet).apply()
+        Log.d(TAG, "Saved Flex Stakes Set By User flag locally: $hasSet")
+    }
+
+    /**
+     * Retrieves the flag indicating whether the user has explicitly confirmed their flexible stakes.
+     * Defaults to false if the flag hasn't been saved yet.
+     * @param context The application context.
+     * @return True if the user has confirmed stakes, false otherwise.
+     */
+    fun getFlexStakesSetByUser(context: Context): Boolean {
+        return getPreferences(context).getBoolean(KEY_FLEX_STAKES_SET_BY_USER, false) // Default to false
+    }
+
+
     // --- Daily Outcome Tracking (Local Only) ---
 
     /**
@@ -293,6 +319,10 @@ object StudyStateManager {
                 if (document != null && document.exists()) {
                     Log.d(TAG, "Firestore document found for user $userId. Applying to local state...")
                     val editor = getPreferences(context).edit()
+
+                    // Assume flag might not exist in older Firestore docs, default to false if missing
+                    val flexSet = document.getBoolean(Constants.KEY_FLEX_STAKES_SET_BY_USER) ?: false
+                    editor.putBoolean(KEY_FLEX_STAKES_SET_BY_USER, flexSet)
 
                     // Apply USER_ID regardless
                     editor.putString(Constants.KEY_USER_ID, userId)

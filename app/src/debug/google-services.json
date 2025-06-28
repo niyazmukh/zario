@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "46681265349",
+    "project_id": "device-streaming-db5af34a",
+    "storage_bucket": "device-streaming-db5af34a.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:46681265349:android:c8fd9525835f0e10d48cac",
+        "android_client_info": {
+          "package_name": "com.niyaz.zario"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyANrjhbCybpwxcm9iCwG4c5jGSCybPb7eI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

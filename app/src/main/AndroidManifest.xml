@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+
+    <!-- Permissions -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+
+    <!-- Special permission required to access app usage statistics -->
+    <!-- Needs to be granted manually by the user in settings -->
+    <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS"
+        tools:ignore="ProtectedPermissions" />
+
+
+    <!-- Required to post notifications on Android 13 (API 33) and above -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+
+
+    <!-- Required to run services in the foreground (improves reliability for tracking) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <!-- If targeting Android 14+, specify foreground service type -->
+    <!-- <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/> -->
+
+
+    <!-- Required to restart the tracking service when the device boots -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+
+    <!-- Add near other permissions -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
+
+
+
+
+    <application
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Zario"
+        tools:targetApi="31"> <!-- Consider updating targetApi to 33 or 34 if appropriate -->
+
+
+
+        <!-- Declare the Main Activity -->
+        <!-- This activity will launch when the user opens the app -->
+        <!-- android:exported="true" allows it to be launched by the system launcher -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+
+        <!-- Declare the Usage Tracking Service -->
+        <!-- Ensure the name matches your package and class name -->
+        <service
+            android:name=".services.UsageTrackingService"
+            android:foregroundServiceType="dataSync"
+            android:exported="false" />
+
+
+        <!-- Use "dataSync" as it involves collecting local data. -->
+        <!-- exported="false" means other apps cannot start this service. -->
+        <!-- Consider adding android:permission="android.permission.BIND_JOB_SERVICE" if planning to use JobScheduler later -->
+
+
+        <!-- Receiver to listen for device boot completion -->
+        <!--
+        <receiver
+            android:name=".receivers.BootReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED"/>
+            </intent-filter>
+        </receiver>
+        -->
+
+
+    </application>
+
+
+</manifest>
+

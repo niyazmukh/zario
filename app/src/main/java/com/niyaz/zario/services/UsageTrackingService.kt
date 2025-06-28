@@ -593,8 +593,8 @@ class UsageTrackingService : Service() {
         val (lastCheckTime, lastGoalReached, lastPointsChange) = StudyStateManager.getLastDailyOutcome(applicationContext)
         val todayStart = getStartOfDayTimestamp(System.currentTimeMillis())
         // Check timestamp corresponds to roughly the last 24 hours (covers worker running slightly late/early)
-        val validOutcomeTime = lastCheckTime != null && lastCheckTime >= todayStart - TimeUnit.DAYS.toMillis(1) - TimeUnit.HOURS.toMillis(6) // Allow some buffer
-
+        val comparisonTime = System.currentTimeMillis() - TimeUnit.MINUTES.toMillis(Constants.DAILY_OUTCOME_VALIDITY_MINUTES)
+        val validOutcomeTime = lastCheckTime != null && lastCheckTime >= comparisonTime
 
         if (validOutcomeTime && lastGoalReached != null && lastPointsChange != null) {
             Log.d(TAG, "Attempting to show daily feedback notification.")
@@ -624,76 +624,62 @@ class UsageTrackingService : Service() {
     /** Checks accumulated usage against goal and triggers 90%/100% notifications. */
     @SuppressLint("StringFormatMatches")
     private fun checkUsageLimitNotifications(accumulatedMs: Long, goalMs: Long) {
-        // Avoid division by zero or issues if goal is invalid
-        if (goalMs <= 0) {
-            Log.w(TAG, "checkUsageLimitNotifications skipped: Invalid goalMs ($goalMs)")
-            return
-        }
-
-
-        // Capture current value and check for null
-        val currentTargetAppPackage = targetAppPackage
-        if (currentTargetAppPackage == null) {
-            Log.e(TAG, "checkUsageLimitNotifications skipped: targetAppPackage is null unexpectedly.")
-            return // Use return instead of elvis operator from <change> for clarity
-        }
-
-
-        val usagePercent = (accumulatedMs.toDouble() / goalMs.toDouble()) * 100.0
-        // Use AppInfoHelper for consistent app name fetching
-        val targetAppName = AppInfoHelper.getAppName(applicationContext, currentTargetAppPackage)
-        val pointsUnit = getString(R.string.points_unit) // Get points unit
-
-
-        // 90% Warning (FR028)
-        if (usagePercent >= 90 && !warnedAt90Percent) {
-            val title = getString(R.string.notification_warning_90_title) // Use stringResource
-            val remainingMs = (goalMs - accumulatedMs).coerceAtLeast(0)
-            val remainingMinutes = TimeUnit.MILLISECONDS.toMinutes(remainingMs)
-            val goalMinutesTotal = TimeUnit.MILLISECONDS.toMinutes(goalMs)
-            val usedMinutes = TimeUnit.MILLISECONDS.toMinutes(accumulatedMs)
-            // Use stringResource for the message
-            val message = getString(R.string.notification_warning_90_message, usedMinutes, goalMinutesTotal, targetAppName, remainingMinutes)
-
-
-            // Use constant for notification ID
-            showInterventionNotification(USAGE_WARNING_90_NOTIFICATION_ID, title, message)
-            warnedAt90Percent = true // Set flag so it only shows once per day
-            Log.i(TAG,"Showing 90% usage warning notification.")
-        }
-
-
-        // 100% Limit Reached (FR029)
-        if (usagePercent >= 100 && !warnedAt100Percent) {
-            val title = getString(R.string.notification_limit_100_title) // Use stringResource
-            val goalMinutes = TimeUnit.MILLISECONDS.toMinutes(goalMs)
-
-
-            val condition = StudyStateManager.getCondition(applicationContext)
-            // Use stringResource for consequence messages
-            // Use constant for points value comparison
-            val pointConsequence = when(condition) {
-                StudyPhase.INTERVENTION_CONTROL -> getString(R.string.notification_limit_100_consequence_control)
-                StudyPhase.INTERVENTION_DEPOSIT -> getString(R.string.notification_limit_100_consequence_deposit, Constants.DEFAULT_DEPOSIT_LOSE_POINTS, pointsUnit) // Use Constant
-                StudyPhase.INTERVENTION_FLEXIBLE -> {
-                    val (_, lose) = StudyStateManager.getFlexStakes(applicationContext)
-                    // Use constants for range check
-                    if (lose != null && lose > Constants.FLEX_STAKES_MIN_LOSE) getString(R.string.notification_limit_100_consequence_flex_lose, lose, pointsUnit)
-                    else if (lose == Constants.FLEX_STAKES_MIN_LOSE) getString(R.string.notification_limit_100_consequence_flex_no_lose) // Check against MIN_LOSE (0)
-                    else getString(R.string.notification_limit_100_consequence_fallback) // Fallback if lose is null or < 0 (shouldn't happen)
-                }
-                else -> getString(R.string.notification_limit_100_consequence_fallback) // Fallback for other phases
+        serviceScope.launch(Dispatchers.Main) { // <<< CHANGE: Switch to Main thread
+            // Avoid division by zero or issues if goal is invalid
+            if (goalMs <= 0) {
+                Log.w(TAG, "checkUsageLimitNotifications skipped: Invalid goalMs ($goalMs)")
+                return@launch
             }
 
+            // Capture current value and check for null
+            val currentTargetAppPackage = targetAppPackage
+            if (currentTargetAppPackage == null) {
+                Log.e(TAG, "checkUsageLimitNotifications skipped: targetAppPackage is null unexpectedly.")
+                return@launch
+            }
 
-            // Construct the final message using stringResource
-            val message = getString(R.string.notification_limit_100_message, goalMinutes, targetAppName, pointConsequence)
+            val usagePercent = (accumulatedMs.toDouble() / goalMs.toDouble()) * 100.0
+            // Use AppInfoHelper for consistent app name fetching on the Main thread
+            val targetAppName = AppInfoHelper.getAppName(applicationContext, currentTargetAppPackage)
+            val pointsUnit = getString(R.string.points_unit) // Get points unit
 
+            // 90% Warning (FR028)
+            if (usagePercent >= 90 && !warnedAt90Percent) {
+                warnedAt90Percent = true // Set flag immediately to prevent race conditions
+                val title = getString(R.string.notification_warning_90_title)
+                val remainingMs = (goalMs - accumulatedMs).coerceAtLeast(0)
+                val remainingMinutes = TimeUnit.MILLISECONDS.toMinutes(remainingMs)
+                val goalMinutesTotal = TimeUnit.MILLISECONDS.toMinutes(goalMs)
+                val usedMinutes = TimeUnit.MILLISECONDS.toMinutes(accumulatedMs)
+                val message = getString(R.string.notification_warning_90_message, usedMinutes, goalMinutesTotal, targetAppName, remainingMinutes)
 
-            // Use constant for notification ID
-            showInterventionNotification(USAGE_LIMIT_100_NOTIFICATION_ID, title, message)
-            warnedAt100Percent = true // Set flag so it only shows once per day
-            Log.i(TAG,"Showing 100% usage limit notification with consequence.")
+                showInterventionNotification(USAGE_WARNING_90_NOTIFICATION_ID, title, message)
+                Log.i(TAG,"Showing 90% usage warning notification.")
+            }
+
+            // 100% Limit Reached (FR029)
+            if (usagePercent >= 100 && !warnedAt100Percent) {
+                warnedAt100Percent = true // Set flag immediately
+                val title = getString(R.string.notification_limit_100_title)
+                val goalMinutes = TimeUnit.MILLISECONDS.toMinutes(goalMs)
+
+                val condition = StudyStateManager.getCondition(applicationContext)
+                val pointConsequence = when(condition) {
+                    StudyPhase.INTERVENTION_CONTROL -> getString(R.string.notification_limit_100_consequence_control)
+                    StudyPhase.INTERVENTION_DEPOSIT -> getString(R.string.notification_limit_100_consequence_deposit, Constants.DEFAULT_DEPOSIT_LOSE_POINTS, pointsUnit)
+                    StudyPhase.INTERVENTION_FLEXIBLE -> {
+                        val (_, lose) = StudyStateManager.getFlexStakes(applicationContext)
+                        if (lose != null && lose > Constants.FLEX_STAKES_MIN_LOSE) getString(R.string.notification_limit_100_consequence_flex_lose, lose, pointsUnit)
+                        else if (lose == Constants.FLEX_STAKES_MIN_LOSE) getString(R.string.notification_limit_100_consequence_flex_no_lose)
+                        else getString(R.string.notification_limit_100_consequence_fallback)
+                    }
+                    else -> getString(R.string.notification_limit_100_consequence_fallback)
+                }
+
+                val message = getString(R.string.notification_limit_100_message, goalMinutes, targetAppName, pointConsequence)
+                showInterventionNotification(USAGE_LIMIT_100_NOTIFICATION_ID, title, message)
+                Log.i(TAG,"Showing 100% usage limit notification with consequence.")
+            }
         }
     }
 

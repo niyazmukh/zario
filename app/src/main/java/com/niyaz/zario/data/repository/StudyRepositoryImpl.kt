@@ -300,7 +300,7 @@ class StudyRepositoryImpl(
 
     // --- App Info (from AppInfoHelper) ---
     override suspend fun getAppDetails(packageName: String): AppBaselineInfo { // Update return type location
-        return withContext(Dispatchers.IO) {
+        return withContext(Dispatchers.Main) { // <<< CHANGE: Switch to Main thread for PackageManager access
             val details = AppInfoHelper.getAppDetails(context, packageName)
             // Now uses the imported AppBaselineInfo
             AppBaselineInfo(

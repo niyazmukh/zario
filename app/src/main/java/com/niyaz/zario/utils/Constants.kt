@@ -36,39 +36,51 @@ object Constants {
    const val FIRESTORE_FIELD_STUDY_CONDITION = "studyCondition"
    const val FIRESTORE_FIELD_STUDY_START_TIMESTAMP = "studyStartTimestamp"
    const val FIRESTORE_FIELD_POINTS_BALANCE = "pointsBalance"
-   const val FIRESTORE_FIELD_TARGET_APP = "targetAppPackage"
+   const val FIRESTORE_FIELD_TARGET_APP = "targetApp"
    const val FIRESTORE_FIELD_DAILY_GOAL = "dailyGoalMs"
-   const val FIRESTORE_FIELD_FLEX_EARN = "flexPointsEarn"
-   const val FIRESTORE_FIELD_FLEX_LOSE = "flexPointsLose"
+   const val FIRESTORE_FIELD_FLEX_EARN = "flexEarn"
+   const val FIRESTORE_FIELD_FLEX_LOSE = "flexLose"
+
+
+   // --- Notification Channels ---
+   const val USAGE_TRACKING_CHANNEL_ID = "usage_tracking_channel"
+   const val USAGE_TRACKING_FOREGROUND_NOTIF_ID = 101
+   const val USAGE_TRACKING_DAILY_FEEDBACK_NOTIF_ID = 201
+   const val USAGE_TRACKING_WARN_90_NOTIF_ID = 202
+   const val USAGE_TRACKING_LIMIT_100_NOTIF_ID = 203
+
+
+   // --- Worker Names ---
+   const val DAILY_CHECK_WORKER_NAME = "ZarioDailyCheck"
+   const val FIRESTORE_SYNC_WORKER_NAME = "ZarioFirestoreSync"
+
+
+   // --- Time Durations ---
+   val DAILY_CHECK_INTERVAL_MINUTES: Long = 15
+   val FIRESTORE_SYNC_INTERVAL_MINUTES: Long = 5
+   val BASELINE_DURATION_MINUTES: Long = 10
+   val USAGE_TICKER_INTERVAL_SECONDS: Long = 15
+   val DAILY_OUTCOME_VALIDITY_MINUTES: Long = 30 // Check if outcome is from the last 30 mins
 
 
    // --- Usage Tracking Service ---
-   const val USAGE_TRACKING_CHANNEL_ID = "com.niyaz.zario.TRACKING_CHANNEL"
-   const val USAGE_TRACKING_FOREGROUND_NOTIF_ID = 1
-   const val USAGE_TRACKING_DAILY_FEEDBACK_NOTIF_ID = 2
-   const val USAGE_TRACKING_WARN_90_NOTIF_ID = 3
-   const val USAGE_TRACKING_LIMIT_100_NOTIF_ID = 4
    val USAGE_TRACKING_INTERVAL_MS: Long = TimeUnit.MINUTES.toMillis(1) // Check every 1 minute
-   // val USAGE_TRACKING_INTERVAL_MS: Long = TimeUnit.SECONDS.toMillis(15) // TESTING VALUE
    const val USAGE_TRACKING_MIN_SAVE_DURATION_MS = 1000L // Min duration to save to DB
 
 
-   // --- Daily Check Worker ---
-   const val DAILY_CHECK_WORKER_NAME = "ZarioDailyCheck"
-   const val DEFAULT_CHECK_WORKER_INTERVAL_HOURS = 1L
-
-
-   // --- Study Logic ---
-   const val BASELINE_DURATION_DAYS = 7
+   // --- Goal Setting ---
    const val GOAL_REDUCTION_FACTOR = 0.80 // 20% reduction
    const val MINIMUM_GOAL_DURATION_MS = 60000L // 1 minute
+
+
+   // --- Point System ---
    const val INITIAL_POINTS = 100
    const val MAX_POINTS = 1200
    const val MIN_POINTS = 0
    const val DEFAULT_CONTROL_EARN_POINTS = 10
-   const val DEFAULT_CONTROL_LOSE_POINTS = 0 // No change on failure
+   const val DEFAULT_CONTROL_LOSE_POINTS = 0
    const val DEFAULT_DEPOSIT_EARN_POINTS = 10
-   const val DEFAULT_DEPOSIT_LOSE_POINTS = 40 // Positive value representing loss
+   const val DEFAULT_DEPOSIT_LOSE_POINTS = 20
    const val FLEX_STAKES_MIN_EARN = 0
    const val FLEX_STAKES_MAX_EARN = 10
    const val FLEX_STAKES_MIN_LOSE = 0
@@ -77,13 +89,33 @@ object Constants {
    const val DEFAULT_FLEX_LOSE_SLIDER = 20f
 
 
+   // --- Misc UI ---
+   const val GOAL_SETTING_APP_ICON_COUNT = 4 // Number of app icons to show
+
+
    // --- Authentication ---
    const val MIN_PASSWORD_LENGTH = 8
    const val MIN_BIRTH_YEAR = 1900
 
 
-   // --- Goal Setting UI ---
-   const val GOAL_SETTING_APP_ICON_COUNT = 4 // Number of app icons to show
+   // Default values for study conditions
+   const val MIN_DB_SAVE_DURATION_MS = 1000L
+
+
+   // --- OLD USAGE TRACKING INTERVAL ---
+   // Kept for reference, but new constants above should be used.
+   // val USAGE_TRACKING_INTERVAL_MS: Long = TimeUnit.MINUTES.toMillis(1) // Check every 1 minute
+   // val USAGE_TRACKING_INTERVAL_MS: Long = TimeUnit.SECONDS.toMillis(15) // TESTING VALUE
+
+
+   // --- OLD BASELINE DURATION ---
+   // Kept for reference, new constants above should be used.
+   // const val BASELINE_DURATION_DAYS = 7
+
+
+   // Firestore Collection/Field Names
+   const val FIRESTORE_FIELD_USER_ID = "userId"
+   // ... existing code ...
 
 
 }

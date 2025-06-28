@@ -1,7 +1,7 @@
 package com.niyaz.zario.ui.screens // Ensure correct package
 
-
 import android.Manifest
+import android.app.Application
 import android.content.Intent
 import android.os.Build
 import android.util.Log
@@ -29,14 +29,23 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -72,11 +81,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.ContextCompat.startActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
-import androidx.work.ExistingPeriodicWorkPolicy
-import androidx.work.PeriodicWorkRequestBuilder
-import androidx.work.WorkManager
 import coil.compose.rememberAsyncImagePainter
 import com.google.firebase.auth.ktx.auth
 import com.google.firebase.firestore.ktx.firestore
@@ -95,45 +100,43 @@ import com.niyaz.zario.utils.AppInfoHelper
 import com.niyaz.zario.utils.Constants
 import com.niyaz.zario.utils.PermissionsUtils
 import com.niyaz.zario.utils.StudyStateManager
-import com.niyaz.zario.workers.DailyCheckWorker
-import com.niyaz.zario.workers.FirestoreSyncWorker
 import java.util.concurrent.TimeUnit
 import kotlin.math.max
 
 
-
-
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HomeScreen(navController: NavController) { // Inject ViewModel
+fun HomeScreen(
+    navController: NavController
+) {
     val context = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
+    val application = context.applicationContext as Application
 
-
-    // --- Instantiate Repository (Similar to AuthScreens) ---
-    // In a larger app, use DI (Hilt/Koin) to provide the repository here.
+    // Create the repository instance, remembered across recompositions
     val repository: StudyRepository = remember {
         StudyRepositoryImpl(
-            context = context.applicationContext,
-            usageStatDao = AppDatabase.getDatabase(context.applicationContext).usageStatDao()
+            context = application,
+            usageStatDao = AppDatabase.getDatabase(application).usageStatDao()
         )
     }
 
-
-    // --- Instantiate ViewModel using the Factory ---
-    val homeViewModel: HomeViewModel = viewModel(
-        factory = HomeViewModel.provideFactory(repository = repository)
+    // Create the ViewModel using the remembered repository
+    val viewModel: HomeViewModel = androidx.lifecycle.viewmodel.compose.viewModel(
+        factory = HomeViewModel.provideFactory(
+            application = application,
+            repository = repository
+        )
     )
-    // --- End ViewModel Instantiation ---
 
-
-
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var studyPhase by remember { mutableStateOf(StudyStateManager.getStudyPhase(context)) }
 
     // --- Collect State from ViewModel ---
-    val todayUsageMs by homeViewModel.todayUsageMs.collectAsState()
-    val goalSettingState by homeViewModel.goalSettingState.collectAsState()
-    val baselineAppList by homeViewModel.baselineAppList.collectAsState()
-    val suggestedApp by homeViewModel.suggestedApp.collectAsState()
-    val hourlyData by homeViewModel.hourlyUsageData.collectAsState() // Collect hourly data
+    val todayUsageMs by viewModel.todayUsageMs.collectAsState()
+    val goalSettingState by viewModel.goalSettingState.collectAsState()
+    val baselineAppList by viewModel.baselineAppList.collectAsState()
+    val suggestedApp by viewModel.suggestedApp.collectAsState()
+    val hourlyData by viewModel.hourlyUsageData.collectAsState() // Collect hourly data
 
 
     // --- Local State (Permissions, Phase, Stakes) ---
@@ -144,8 +147,7 @@ fun HomeScreen(navController: NavController) { // Inject ViewModel
             else ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == android.content.pm.PackageManager.PERMISSION_GRANTED
         )
     }
-    // Track current phase locally, but rely on ViewModel/StateManager for source of truth
-    var currentStudyPhase by remember { mutableStateOf(StudyStateManager.getStudyPhase(context)) }
+    var showMenu by remember { mutableStateOf(false) } // For TopAppBar menu
     // Track flex stakes locally
     var flexibleStakes by remember {
         mutableStateOf(
@@ -170,60 +172,6 @@ fun HomeScreen(navController: NavController) { // Inject ViewModel
     }
 
 
-// --- Schedule Daily AND Sync Workers ---
-    LaunchedEffect(currentStudyPhase) { // Trigger based on phase change
-        val workManager = WorkManager.getInstance(context)
-
-
-        // --- Daily Check Worker (Only during Intervention) ---
-        if (currentStudyPhase.name.startsWith("INTERVENTION")) { // Condition remains same
-            Log.d("HomeScreen", "Intervention phase active. Scheduling DailyCheckWorker.")
-            // Use Constant for worker interval
-            val dailyCheckRequest = PeriodicWorkRequestBuilder<DailyCheckWorker>(
-                Constants.DEFAULT_CHECK_WORKER_INTERVAL_HOURS, // Example: Use a constant if defined (e.g., 24)
-                TimeUnit.HOURS
-            ).build() // Add constraints if needed (e.g., charging)
-            // Use Constant for worker name
-            workManager.enqueueUniquePeriodicWork(
-                Constants.DAILY_CHECK_WORKER_NAME,
-                ExistingPeriodicWorkPolicy.KEEP, // Keep existing worker if running
-                dailyCheckRequest
-            )
-            // Use Constant for worker name
-            Log.i("HomeScreen", "DailyCheckWorker enqueued/verified with name: ${Constants.DAILY_CHECK_WORKER_NAME}") // Use Constant
-        } else { // If not in intervention, cancel DailyCheckWorker
-            Log.d("HomeScreen", "Not in intervention phase. Cancelling DailyCheckWorker.")
-            // Use Constant for worker name
-            workManager.cancelUniqueWork(Constants.DAILY_CHECK_WORKER_NAME) // Use Constant
-        }
-
-
-        // --- Firestore Sync Worker (Runs during Baseline AND Intervention) ---
-        // Schedule if user has logged in and tracking is potentially active
-        val shouldRunSync = currentStudyPhase == StudyPhase.BASELINE || currentStudyPhase.name.startsWith("INTERVENTION")
-        if (shouldRunSync) {
-            Log.d("HomeScreen", "Baseline or Intervention phase active. Scheduling FirestoreSyncWorker.")
-            val syncRequest = PeriodicWorkRequestBuilder<FirestoreSyncWorker>(
-                FirestoreSyncWorker.REPEAT_INTERVAL_HOURS, // Use interval from Worker companion
-                TimeUnit.HOURS
-            )
-                .setConstraints(FirestoreSyncWorker.WORKER_CONSTRAINTS) // Use constraints from Worker companion
-                .build()
-
-
-            workManager.enqueueUniquePeriodicWork(
-                FirestoreSyncWorker.UNIQUE_WORK_NAME, // Use unique name from Worker companion
-                ExistingPeriodicWorkPolicy.KEEP, // Keep existing worker if already scheduled
-                syncRequest
-            )
-            Log.i("HomeScreen", "FirestoreSyncWorker enqueued/verified with name: ${FirestoreSyncWorker.UNIQUE_WORK_NAME}")
-        } else { // Cancel if not in Baseline or Intervention (e.g., Completed, Registered)
-            Log.d("HomeScreen", "Not in Baseline or Intervention phase. Cancelling FirestoreSyncWorker.")
-            workManager.cancelUniqueWork(FirestoreSyncWorker.UNIQUE_WORK_NAME)
-        }
-    }
-
-
     // --- Re-check permissions, phase, AND stakes on Resume --- (Unchanged)
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -234,17 +182,17 @@ fun HomeScreen(navController: NavController) { // Inject ViewModel
                     hasNotificationPermission = ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == android.content.pm.PackageManager.PERMISSION_GRANTED
                 }
                 // Update local phase based on potentially changed persisted state
-                currentStudyPhase = StudyStateManager.getStudyPhase(context)
-                if (currentStudyPhase == StudyPhase.INTERVENTION_FLEXIBLE) {
+                studyPhase = StudyStateManager.getStudyPhase(context)
+                if (studyPhase == StudyPhase.INTERVENTION_FLEXIBLE) {
                     flexibleStakes = StudyStateManager.getFlexStakes(context)
                 }
                 // If resumed into Goal Setting phase, ensure baseline data is loaded if needed
-                if (currentStudyPhase == StudyPhase.GOAL_SETTING && goalSettingState == GoalSettingUiState.IDLE) {
-                    homeViewModel.loadBaselineData()
+                if (studyPhase == StudyPhase.GOAL_SETTING && goalSettingState == GoalSettingUiState.IDLE) {
+                    viewModel.loadBaselineData()
                 }
                 // Refresh target app in ViewModel on resume in case it changed externally (less likely but safe)
-                if (currentStudyPhase.name.startsWith("INTERVENTION")) {
-                    homeViewModel.refreshTargetApp()
+                if (studyPhase.name.startsWith("INTERVENTION")) {
+                    viewModel.refreshTargetApp()
                 }
             }
         }
@@ -254,18 +202,14 @@ fun HomeScreen(navController: NavController) { // Inject ViewModel
 
 
     // --- Start/Stop Service Effect --- (Unchanged)
-    LaunchedEffect(hasUsageStatsPermission, hasNotificationPermission, currentStudyPhase) {
+    LaunchedEffect(hasUsageStatsPermission, hasNotificationPermission, studyPhase) {
         val shouldBeTracking = hasUsageStatsPermission && hasNotificationPermission &&
-                (currentStudyPhase == StudyPhase.BASELINE || currentStudyPhase.name.startsWith("INTERVENTION"))
+                (studyPhase == StudyPhase.BASELINE || studyPhase.name.startsWith("INTERVENTION"))
         val serviceIntent = Intent(context, UsageTrackingService::class.java)
         if (shouldBeTracking) {
             Log.d("HomeScreen", "Conditions met for tracking. Ensuring service is started.")
             try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    context.startForegroundService(serviceIntent)
-                } else {
-                    context.startService(serviceIntent)
-                }
+                context.startForegroundService(serviceIntent)
                 Log.d("HomeScreen", "Service start command issued.")
             } catch (e: Exception) {
                 Log.e("HomeScreen", "Failed to start UsageTrackingService: ${e.message}", e)
@@ -282,437 +226,447 @@ fun HomeScreen(navController: NavController) { // Inject ViewModel
     }
 
 
+    // --- Title for TopAppBar ---
+    val topBarTitle = when (studyPhase) {
+        StudyPhase.BASELINE -> stringResource(R.string.home_phase_title_baseline)
+        StudyPhase.GOAL_SETTING -> stringResource(R.string.home_phase_title_goal_setting)
+        StudyPhase.INTERVENTION_CONTROL,
+        StudyPhase.INTERVENTION_DEPOSIT,
+        StudyPhase.INTERVENTION_FLEXIBLE -> stringResource(R.string.home_phase_title_intervention)
+        StudyPhase.REGISTERED -> stringResource(R.string.home_phase_title_registered)
+        StudyPhase.COMPLETED -> stringResource(R.string.home_phase_title_completed)
+    }
+
+
 // --- UI ---
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
-        verticalArrangement = Arrangement.Top, // Changed to Top for Goal Setting flow
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        // Determine if we need to show prompts or the main content
-        val showPermissionPrompts = !hasUsageStatsPermission || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !hasNotificationPermission)
-        val showActiveContent = !showPermissionPrompts // Only show main content if permissions are OK
-
-
-        if (showActiveContent) {
-            // --- Display Active Content (Phase Dependent) ---
-            // Show Phase always at the top for context
-            Text(
-                text = stringResource(R.string.home_study_phase_label, currentStudyPhase.name), // Use stringResource
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.padding(bottom = 16.dp) // Add padding below phase
-            )
-
-
-            // Check if Flexible Deposit stakes need setup
-            val needsFlexSetup = currentStudyPhase == StudyPhase.INTERVENTION_FLEXIBLE && flexibleStakes.first == null
-
-
-            if (needsFlexSetup) {
-                // --- Show Flexible Deposit Setup UI --- (Composable updated below)
-                FlexibleDepositSetupUI { earn, lose ->
-                    // Callback when user confirms stakes
-                    Log.d("HomeScreen", "Flexible Stakes Confirmed: Earn=$earn, Lose=$lose")
-                    // Save stakes locally and to Firestore
-                    StudyStateManager.saveFlexStakes(context, earn, lose)
-                    val userId = StudyStateManager.getUserId(context)
-                    if (userId != null) {
-                        val firestore = Firebase.firestore
-                        firestore.collection("users").document(userId)
-                            .update(mapOf("flexPointsEarn" to earn.toLong(), "flexPointsLose" to lose.toLong())) // Save as Long
-                            .addOnSuccessListener { Log.i("HomeScreen", "Firestore flex stakes updated.") }
-                            .addOnFailureListener { e -> Log.e("HomeScreen", "Firestore flex stakes update failed.", e)}
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(topBarTitle) },
+                actions = {
+                    IconButton(onClick = { showMenu = true }) {
+                        Icon(Icons.Default.MoreVert, contentDescription = stringResource(R.string.home_menu_description))
                     }
-                    // Update local state to hide setup UI and show main intervention UI
-                    flexibleStakes = Pair(earn, lose)
-                }
-            } else {
-                // --- Show Main Content based on Phase (when flex setup not needed or not flex condition) ---
-                when (currentStudyPhase) {
-                    StudyPhase.BASELINE -> { // --- Baseline UI (Text updated) ---
-                        val startTime = StudyStateManager.getStudyStartTimestamp(context)
-                        // Use Constant for baseline duration
-                        val baselineDurationDays = Constants.BASELINE_DURATION_DAYS
-                        val baselineDurationMs = TimeUnit.DAYS.toMillis(baselineDurationDays.toLong())
-
-
-                        // --- Check for Baseline Completion ---
-                        LaunchedEffect(startTime) {
-                            if (startTime > 0) {
-                                val timeElapsedMs = System.currentTimeMillis() - startTime
-                                if (timeElapsedMs >= baselineDurationMs) {
-                                    Log.i("HomeScreen", "Baseline period complete ($timeElapsedMs ms elapsed). Transitioning to GOAL_SETTING.")
-                                    val goalSettingPhase = StudyPhase.GOAL_SETTING
-                                    StudyStateManager.saveStudyPhase(context, goalSettingPhase)
-                                    val userId = StudyStateManager.getUserId(context)
-                                    if (userId != null) {
-                                        Firebase.firestore.collection("users").document(userId)
-                                            .update("studyPhase", goalSettingPhase.name)
-                                            .addOnSuccessListener { Log.i("HomeScreen", "Firestore phase updated to GOAL_SETTING.") }
-                                            .addOnFailureListener{ e -> Log.e("HomeScreen", "Firestore phase update failed.", e) }
-                                    }
-                                    currentStudyPhase = goalSettingPhase // Update local state immediately
-                                    // Trigger baseline load in ViewModel now that phase changed
-                                    homeViewModel.loadBaselineData()
-                                } else {
-                                    // Use the *variable* baselineDurationDays which holds the constant
-                                    val daysRemaining = baselineDurationDays - TimeUnit.MILLISECONDS.toDays(timeElapsedMs)
-                                    Log.d("HomeScreen","Baseline ongoing. Approx ${daysRemaining + 1} days remaining.") // +1 for current day
+                    DropdownMenu(
+                        expanded = showMenu,
+                        onDismissRequest = { showMenu = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.home_logout_button)) },
+                            onClick = {
+                                Log.d("HomeScreen", "Logout clicked from menu.")
+                                showMenu = false // Dismiss menu
+                                // The unified, complete logout logic
+                                try {
+                                    context.stopService(Intent(context, UsageTrackingService::class.java))
+                                    Log.d("HomeScreen", "Service stop issued.")
+                                } catch (e: Exception) {
+                                    Log.e("HomeScreen", "Error stopping service.", e)
                                 }
-                            } else {
-                                Log.w("HomeScreen", "Baseline phase active but start timestamp invalid ($startTime).")
+                                Firebase.auth.signOut()
+                                StudyStateManager.clearStudyState(context)
+                                viewModel.refreshTargetApp()
+                                navController.navigate(Screen.AuthDecision.route) {
+                                    popUpTo(Screen.Home.route) { inclusive = true }
+                                    launchSingleTop = true
+                                }
                             }
+                        )
+                    }
+                }
+            )
+        }
+    ) { innerPadding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .padding(horizontal = 16.dp), // Apply horizontal padding for content
+            verticalArrangement = Arrangement.Top,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            // Determine if we need to show prompts or the main content
+            val showPermissionPrompts = !hasUsageStatsPermission || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !hasNotificationPermission)
+            val showActiveContent = !showPermissionPrompts // Only show main content if permissions are OK
+
+
+            if (showActiveContent) {
+                // --- Display Active Content (Phase Dependent) ---
+                // Check if Flexible Deposit stakes need setup
+                val needsFlexSetup = studyPhase == StudyPhase.INTERVENTION_FLEXIBLE && flexibleStakes.first == null
+
+
+                if (needsFlexSetup) {
+                    // --- Show Flexible Deposit Setup UI --- (Composable updated below)
+                    FlexibleDepositSetupUI { earn, lose ->
+                        // Callback when user confirms stakes
+                        Log.d("HomeScreen", "Flexible Stakes Confirmed: Earn=$earn, Lose=$lose")
+                        // Save stakes locally and to Firestore
+                        StudyStateManager.saveFlexStakes(context, earn, lose)
+                        val userId = StudyStateManager.getUserId(context)
+                        if (userId != null) {
+                            val firestore = Firebase.firestore
+                            firestore.collection("users").document(userId)
+                                .update(mapOf("flexPointsEarn" to earn.toLong(), "flexPointsLose" to lose.toLong())) // Save as Long
+                                .addOnSuccessListener { Log.i("HomeScreen", "Firestore flex stakes updated.") }
+                                .addOnFailureListener { e -> Log.e("HomeScreen", "Firestore flex stakes update failed.", e)}
                         }
-                        // --- END Check ---
+                        // Update local state to hide setup UI and show main intervention UI
+                        flexibleStakes = Pair(earn, lose)
+                    }
+                } else {
+                    // --- Show Main Content based on Phase (when flex setup not needed or not flex condition) ---
+                    when (studyPhase) {
+                        StudyPhase.BASELINE -> { // --- Baseline UI (Text updated) ---
+                            val startTime = StudyStateManager.getStudyStartTimestamp(context)
+                            // Use Constant for baseline duration
+                            val baselineDurationMinutes = Constants.BASELINE_DURATION_MINUTES
+                            val timeElapsedMs = if (startTime > 0) System.currentTimeMillis() - startTime else 0
 
 
-                        // --- Baseline UI Content --- (Text updated)
-                        Text(stringResource(R.string.home_baseline_title), style = MaterialTheme.typography.headlineMedium) // Use stringResource
-                        Spacer(modifier = Modifier.height(16.dp))
-                        val daysElapsed = if (startTime > 0) TimeUnit.MILLISECONDS.toDays(System.currentTimeMillis() - startTime) else 0
-                        // Use the *variable* baselineDurationDays which holds the constant
-                        Text(stringResource(R.string.home_baseline_progress, daysElapsed + 1, baselineDurationDays), style = MaterialTheme.typography.bodyLarge) // Use stringResource
-                        Spacer(modifier = Modifier.height(8.dp))
+                            // --- Check for Baseline Completion ---
+                            LaunchedEffect(startTime) {
+                                if (startTime > 0) {
+                                    val timeElapsedMs = System.currentTimeMillis() - startTime
+                                    if (timeElapsedMs >= TimeUnit.MINUTES.toMillis(baselineDurationMinutes)) {
+                                        Log.i("HomeScreen", "Baseline period complete ($timeElapsedMs ms elapsed). Transitioning to GOAL_SETTING.")
+                                        val goalSettingPhase = StudyPhase.GOAL_SETTING
+                                        StudyStateManager.saveStudyPhase(context, goalSettingPhase)
+                                        val userId = StudyStateManager.getUserId(context)
+                                        if (userId != null) {
+                                            Firebase.firestore.collection("users").document(userId)
+                                                .update("studyPhase", goalSettingPhase.name)
+                                                .addOnSuccessListener { Log.i("HomeScreen", "Firestore phase updated to GOAL_SETTING.") }
+                                                .addOnFailureListener{ e -> Log.e("HomeScreen", "Firestore phase update failed.", e) }
+                                        }
+                                        studyPhase = goalSettingPhase // Update local state immediately
+                                        // Trigger baseline load in ViewModel now that phase changed
+                                        viewModel.loadBaselineData()
+                                    } else {
+                                        // Use the *variable* baselineDurationMinutes which holds the constant
+                                        val minutesRemaining = baselineDurationMinutes - TimeUnit.MILLISECONDS.toMinutes(timeElapsedMs)
+                                        Log.d("HomeScreen","Baseline ongoing. Approx ${minutesRemaining + 1} minutes remaining.") // +1 for current minute
+                                    }
+                                } else {
+                                    Log.w("HomeScreen", "Baseline phase active but start timestamp invalid ($startTime).")
+                                }
+                            }
+                            // --- END Check ---
+
+
+                            // --- Baseline UI Content --- (Text updated)
+                            Text(stringResource(R.string.home_baseline_title), style = MaterialTheme.typography.headlineMedium) // Use stringResource
+                            Spacer(modifier = Modifier.height(16.dp))
+                            val minutesElapsed = if (startTime > 0) TimeUnit.MILLISECONDS.toMinutes(System.currentTimeMillis() - startTime) else 0
+                            // Use the *variable* baselineDurationMinutes which holds the constant
+                            Text(stringResource(R.string.home_baseline_progress, minutesElapsed + 1, baselineDurationMinutes), style = MaterialTheme.typography.bodyLarge) // Use stringResource
+                            Spacer(modifier = Modifier.height(8.dp))
+                            if (minutesElapsed < baselineDurationMinutes) {
+                                val minutesRemaining = baselineDurationMinutes - minutesElapsed
+                                Text(
+                                    text = "Please continue to use your phone normally. You will be able to set your goal in $minutesRemaining minutes.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+                            // --- End Baseline UI ---
+                        } // End BASELINE case
+
+
+                        // --- GOAL_SETTING IMPLEMENTATION (Text updated) ---
+                        StudyPhase.GOAL_SETTING -> {
+                            // Trigger load if entering this state and it's idle
+                            LaunchedEffect(goalSettingState) {
+                                if (goalSettingState == GoalSettingUiState.IDLE) {
+                                    viewModel.loadBaselineData()
+                                }
+                            }
+
+
+                            // Display UI based on the ViewModel state
+                            when (goalSettingState) {
+                                GoalSettingUiState.IDLE, GoalSettingUiState.LOADING -> {
+                                    Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text(stringResource(R.string.goal_setting_loading_title), style = MaterialTheme.typography.titleLarge) // Use stringResource
+                                        Spacer(modifier = Modifier.height(16.dp))
+                                        CircularProgressIndicator()
+                                    }
+                                }
+                                GoalSettingUiState.ERROR -> {
+                                    Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text(stringResource(R.string.goal_setting_error_title), style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.error) // Use stringResource
+                                        Spacer(modifier = Modifier.height(16.dp))
+                                        Text(stringResource(R.string.goal_setting_error_message), textAlign = TextAlign.Center) // Use stringResource
+                                        Spacer(modifier = Modifier.height(16.dp))
+                                        Button(onClick = { viewModel.loadBaselineData() }) {
+                                            Text(stringResource(R.string.goal_setting_retry_button)) // Use stringResource
+                                        }
+                                    }
+                                }
+                                GoalSettingUiState.LOADED, GoalSettingUiState.SAVING -> {
+                                    // *** ADD hourlyUsageData from ViewModel ***
+                                    val hourlyData by viewModel.hourlyUsageData.collectAsState()
+
+
+                                    GoalSettingContent( // Call updated composable below
+                                        isLoading = (goalSettingState == GoalSettingUiState.SAVING),
+                                        suggestedApp = suggestedApp,
+                                        baselineAppList = baselineAppList,
+                                        hourlyUsageData = hourlyData, // Pass the data
+                                        onConfirmGoal = { selectedApp ->
+                                            viewModel.confirmGoalSelection(selectedApp)
+                                        }
+                                    )
+                                }
+                                GoalSettingUiState.SAVED -> {
+                                    // This state is transient, the phase change should trigger recomposition
+                                    // to show the intervention UI. Can show a brief message if needed.
+                                    Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text(stringResource(R.string.goal_setting_saved_title), style = MaterialTheme.typography.titleLarge) // Use stringResource
+                                        // Recomposition will happen automatically due to phase change
+                                    }
+                                }
+                            }
+                        } // --- END GOAL_SETTING CASE ---
+
+
+
+
+                        StudyPhase.INTERVENTION_CONTROL,
+                        StudyPhase.INTERVENTION_DEPOSIT,
+                        StudyPhase.INTERVENTION_FLEXIBLE -> { // --- Intervention UI (Text updated) ---
+                            // --- Refactored Intervention UI based on Dashboard Sketch ---
+                            val condition = StudyStateManager.getCondition(context) ?: studyPhase
+                            val points = StudyStateManager.getPointsBalance(context)
+                            val targetAppPkg = StudyStateManager.getTargetApp(context)
+                            val targetAppName = targetAppPkg?.let { AppInfoHelper.getAppName(context, it) } ?: "Your Target App"
+                            val goalMs = StudyStateManager.getDailyGoalMs(context)
+                            val (flexEarn, flexLose) = flexibleStakes
+
+
+                            // *** FIX: Read colors from theme outside Canvas *** (Unchanged)
+                            val primaryColor = MaterialTheme.colorScheme.primary
+                            val trackColor = MaterialTheme.colorScheme.surfaceVariant // Use theme color for track
+
+
+                            Column(
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp), // Add horizontal padding
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                // 1. Dashboard Title
+                                Text(
+                                    stringResource(R.string.dashboard_title), // Use stringResource
+                                    style = MaterialTheme.typography.headlineMedium, // Or headlineLarge if preferred
+                                    modifier = Modifier.padding(bottom = 16.dp)
+                                )
+
+
+                                // 2. Goal and Points Row
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp),
+                                    horizontalArrangement = Arrangement.SpaceAround, // Space out items
+                                    verticalAlignment = Alignment.Top // Align tops
+                                ) {
+                                    // Goal Section
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text(stringResource(R.string.dashboard_goal_section_title), style = MaterialTheme.typography.titleMedium) // Use stringResource
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            text = if (goalMs != null) stringResource(R.string.dashboard_goal_text, targetAppName, formatDuration(goalMs)) else stringResource(R.string.dashboard_goal_not_set), // Use stringResource
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            textAlign = TextAlign.Center,
+                                            modifier = Modifier.heightIn(min = 40.dp) // Ensure space
+                                        )
+                                    }
+
+
+                                    // Points Section
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text(stringResource(R.string.dashboard_points_section_title), style = MaterialTheme.typography.titleMedium) // Use stringResource
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            text = "$points", // Points value itself is dynamic
+                                            style = MaterialTheme.typography.headlineMedium,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                } // End Row Goal/Points
+
+
+                                // --- Circular Progress for Time Left ---
+                                if (goalMs != null && goalMs > 0) {
+                                    Box(
+                                        contentAlignment = Alignment.Center,
+                                        modifier = Modifier
+                                            .fillMaxWidth(0.6f) // Control size relative to screen width
+                                            .aspectRatio(1f) // Make it a square for a perfect circle
+                                            .padding(bottom = 24.dp)
+                                    ) {
+                                        val remainingMs = (goalMs - todayUsageMs).coerceAtLeast(0L)
+                                        // Progress for indicator filling: 0.0 means full time left, 1.0 means no time left
+                                        val progressFraction = (todayUsageMs.toFloat() / goalMs.toFloat()).coerceIn(0f, 1f)
+                                        val sweepAngle = progressFraction * 360f
+                                        val strokeWidth = 12.dp // Define stroke width
+                                        // val primaryColor = MaterialTheme.colorScheme.primary // Read color from theme (already defined above)
+                                        // val trackColor = MaterialTheme.colorScheme.surfaceVariant // Use theme color for track (already defined above)
+
+
+                                        // *** REFACTORED: Draw both arcs in one Canvas *** (Unchanged)
+                                        Canvas(modifier = Modifier.fillMaxSize()) {
+                                            // Background track
+                                            drawArc(
+                                                color = trackColor,
+                                                startAngle = -90f, // Start at the top
+                                                sweepAngle = 360f, // Full circle
+                                                useCenter = false,
+                                                style = Stroke(width = strokeWidth.toPx())
+                                            )
+                                            // Foreground progress arc
+                                            drawArc(
+                                                color = primaryColor,
+                                                startAngle = -90f, // Start at the top
+                                                sweepAngle = sweepAngle, // Angle based on progress
+                                                useCenter = false,
+                                                style = Stroke(width = strokeWidth.toPx(), cap = StrokeCap.Round) // Round cap for progress
+                                            )
+                                        }
+                                        // *** END REFACTORED Canvas ***
+
+
+                                        // Text inside (Updated)
+                                        Text(
+                                            text = stringResource(R.string.dashboard_progress_text, formatDuration(remainingMs)), // Use stringResource
+                                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                                            textAlign = TextAlign.Center
+                                        )
+                                    }
+                                } else {
+                                    // Placeholder if goal isn't set (Updated)
+                                    Text(stringResource(R.string.dashboard_progress_goal_not_set), style = MaterialTheme.typography.bodyLarge) // Use stringResource
+                                    Spacer(modifier = Modifier.height(24.dp))
+                                } // End Circular Progress Box
+
+
+                                // --- Daily Commitment Text ---
+                                Text(stringResource(R.string.dashboard_commitment_section_title), style = MaterialTheme.typography.titleMedium) // Use stringResource
+                                Spacer(modifier = Modifier.height(8.dp))
+                                // Use a simple Card for background/border or just Text
+                                Card(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+                                ) {
+                                    val commitmentText = when(condition) { // Use resolved stringResource results
+                                        StudyPhase.INTERVENTION_CONTROL -> stringResource(R.string.dashboard_commitment_control)
+                                        StudyPhase.INTERVENTION_DEPOSIT -> stringResource(R.string.dashboard_commitment_deposit)
+                                        StudyPhase.INTERVENTION_FLEXIBLE -> stringResource(R.string.dashboard_commitment_flex, flexEarn ?: "-", flexLose ?: "-")
+                                        else -> stringResource(R.string.dashboard_commitment_fallback)
+                                    }
+                                    Text(
+                                        text = commitmentText, // Use resolved string
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        textAlign = TextAlign.Center,
+                                        modifier = Modifier.padding(16.dp).fillMaxWidth() // Padding inside card
+                                    )
+                                } // End Card Commitment
+                                Spacer(modifier = Modifier.height(16.dp)) // Space at the very bottom if needed
+
+
+                            } // End Main Intervention Column
+                        } // End INTERVENTION_* case
+
+
+                        StudyPhase.REGISTERED -> { // --- Registered UI (Text updated) ---
+                            Text(stringResource(R.string.home_registered_title), style = MaterialTheme.typography.headlineMedium) // Use stringResource
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text(stringResource(R.string.home_registered_message), textAlign = TextAlign.Center) // Use stringResource
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Button(onClick = { studyPhase = StudyStateManager.getStudyPhase(context) }) { Text(stringResource(R.string.home_registered_refresh_button)) } // Use stringResource
+                        } // End REGISTERED case
+
+
+                        StudyPhase.COMPLETED -> { // --- Completed UI (Text updated) ---
+                            Text(stringResource(R.string.home_completed_title), style = MaterialTheme.typography.headlineMedium) // Use stringResource
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text(stringResource(R.string.home_completed_message), textAlign = TextAlign.Center) // Use stringResource
+                        } // End COMPLETED case
+
+
+                    } // End of when(studyPhase)
+
+
+                } // END of else block: if(needsFlexSetup)
+
+
+            } else { // showPermissionPrompts is true
+                // --- Display Permission Prompts --- (Text updated)
+                Column( // Use a Column to center the prompts vertically
+                    modifier = Modifier.fillMaxSize(), // Take full space
+                    verticalArrangement = Arrangement.Center, // Center vertically
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        stringResource(R.string.home_permission_title), // Use stringResource
+                        style = MaterialTheme.typography.headlineMedium,
+                        textAlign = TextAlign.Center
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+
+
+                    // Notification Permission Prompt
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !hasNotificationPermission) {
                         Text(
-                            stringResource(R.string.home_baseline_message), // Use stringResource
-                            style = MaterialTheme.typography.bodyMedium,
+                            stringResource(R.string.home_permission_notification_message), // Use stringResource
+                            style = MaterialTheme.typography.bodyLarge,
                             textAlign = TextAlign.Center
                         )
-                        // --- End Baseline UI ---
-                    } // End BASELINE case
-
-
-                    // --- GOAL_SETTING IMPLEMENTATION (Text updated) ---
-                    StudyPhase.GOAL_SETTING -> {
-                        // Trigger load if entering this state and it's idle
-                        LaunchedEffect(goalSettingState) {
-                            if (goalSettingState == GoalSettingUiState.IDLE) {
-                                homeViewModel.loadBaselineData()
-                            }
-                        }
-
-
-                        // Display UI based on the ViewModel state
-                        when (goalSettingState) {
-                            GoalSettingUiState.IDLE, GoalSettingUiState.LOADING -> {
-                                Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text(stringResource(R.string.goal_setting_loading_title), style = MaterialTheme.typography.titleLarge) // Use stringResource
-                                    Spacer(modifier = Modifier.height(16.dp))
-                                    CircularProgressIndicator()
-                                }
-                            }
-                            GoalSettingUiState.ERROR -> {
-                                Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text(stringResource(R.string.goal_setting_error_title), style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.error) // Use stringResource
-                                    Spacer(modifier = Modifier.height(16.dp))
-                                    Text(stringResource(R.string.goal_setting_error_message), textAlign = TextAlign.Center) // Use stringResource
-                                    Spacer(modifier = Modifier.height(16.dp))
-                                    Button(onClick = { homeViewModel.loadBaselineData() }) {
-                                        Text(stringResource(R.string.goal_setting_retry_button)) // Use stringResource
-                                    }
-                                }
-                            }
-                            GoalSettingUiState.LOADED, GoalSettingUiState.SAVING -> {
-                                // *** ADD hourlyUsageData from ViewModel ***
-                                val hourlyData by homeViewModel.hourlyUsageData.collectAsState()
-
-
-                                GoalSettingContent( // Call updated composable below
-                                    isLoading = (goalSettingState == GoalSettingUiState.SAVING),
-                                    suggestedApp = suggestedApp,
-                                    baselineAppList = baselineAppList,
-                                    hourlyUsageData = hourlyData, // Pass the data
-                                    onConfirmGoal = { selectedApp ->
-                                        homeViewModel.confirmGoalSelection(selectedApp)
-                                    }
-                                )
-                            }
-                            GoalSettingUiState.SAVED -> {
-                                // This state is transient, the phase change should trigger recomposition
-                                // to show the intervention UI. Can show a brief message if needed.
-                                Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text(stringResource(R.string.goal_setting_saved_title), style = MaterialTheme.typography.titleLarge) // Use stringResource
-                                    // Recomposition will happen automatically due to phase change
-                                }
-                            }
-                        }
-                    } // --- END GOAL_SETTING CASE ---
-
-
-
-
-                    StudyPhase.INTERVENTION_CONTROL,
-                    StudyPhase.INTERVENTION_DEPOSIT,
-                    StudyPhase.INTERVENTION_FLEXIBLE -> { // --- Intervention UI (Text updated) ---
-                        // --- Refactored Intervention UI based on Dashboard Sketch ---
-                        val condition = StudyStateManager.getCondition(context) ?: currentStudyPhase
-                        val points = StudyStateManager.getPointsBalance(context)
-                        val targetAppPkg = StudyStateManager.getTargetApp(context)
-                        val targetAppName = targetAppPkg?.let { AppInfoHelper.getAppName(context, it) } ?: "Your Target App"
-                        val goalMs = StudyStateManager.getDailyGoalMs(context)
-                        val (flexEarn, flexLose) = flexibleStakes
-
-
-                        // *** FIX: Read colors from theme outside Canvas *** (Unchanged)
-                        val primaryColor = MaterialTheme.colorScheme.primary
-                        val trackColor = MaterialTheme.colorScheme.surfaceVariant // Use theme color for track
-
-
-                        Column(
-                            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp), // Add horizontal padding
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            // 1. Dashboard Title
-                            Text(
-                                stringResource(R.string.dashboard_title), // Use stringResource
-                                style = MaterialTheme.typography.headlineMedium, // Or headlineLarge if preferred
-                                modifier = Modifier.padding(bottom = 16.dp)
-                            )
-
-
-                            // 2. Goal and Points Row
-                            Row(
-                                modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp),
-                                horizontalArrangement = Arrangement.SpaceAround, // Space out items
-                                verticalAlignment = Alignment.Top // Align tops
-                            ) {
-                                // Goal Section
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text(stringResource(R.string.dashboard_goal_section_title), style = MaterialTheme.typography.titleMedium) // Use stringResource
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Text(
-                                        text = if (goalMs != null) stringResource(R.string.dashboard_goal_text, targetAppName, formatDuration(goalMs)) else stringResource(R.string.dashboard_goal_not_set), // Use stringResource
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        textAlign = TextAlign.Center,
-                                        modifier = Modifier.heightIn(min = 40.dp) // Ensure space
-                                    )
-                                }
-
-
-                                // Points Section
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text(stringResource(R.string.dashboard_points_section_title), style = MaterialTheme.typography.titleMedium) // Use stringResource
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Text(
-                                        text = "$points", // Points value itself is dynamic
-                                        style = MaterialTheme.typography.headlineMedium,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
-                            } // End Row Goal/Points
-
-
-                            // --- Circular Progress for Time Left ---
-                            if (goalMs != null && goalMs > 0) {
-                                Box(
-                                    contentAlignment = Alignment.Center,
-                                    modifier = Modifier
-                                        .fillMaxWidth(0.6f) // Control size relative to screen width
-                                        .aspectRatio(1f) // Make it a square for a perfect circle
-                                        .padding(bottom = 24.dp)
-                                ) {
-                                    val remainingMs = (goalMs - todayUsageMs).coerceAtLeast(0L)
-                                    // Progress for indicator filling: 0.0 means full time left, 1.0 means no time left
-                                    val progressFraction = (todayUsageMs.toFloat() / goalMs.toFloat()).coerceIn(0f, 1f)
-                                    val sweepAngle = progressFraction * 360f
-                                    val strokeWidth = 12.dp // Define stroke width
-                                    // val primaryColor = MaterialTheme.colorScheme.primary // Read color from theme (already defined above)
-                                    // val trackColor = MaterialTheme.colorScheme.surfaceVariant // Use theme color for track (already defined above)
-
-
-                                    // *** REFACTORED: Draw both arcs in one Canvas *** (Unchanged)
-                                    Canvas(modifier = Modifier.fillMaxSize()) {
-                                        // Background track
-                                        drawArc(
-                                            color = trackColor,
-                                            startAngle = -90f, // Start at the top
-                                            sweepAngle = 360f, // Full circle
-                                            useCenter = false,
-                                            style = Stroke(width = strokeWidth.toPx())
-                                        )
-                                        // Foreground progress arc
-                                        drawArc(
-                                            color = primaryColor,
-                                            startAngle = -90f, // Start at the top
-                                            sweepAngle = sweepAngle, // Angle based on progress
-                                            useCenter = false,
-                                            style = Stroke(width = strokeWidth.toPx(), cap = StrokeCap.Round) // Round cap for progress
-                                        )
-                                    }
-                                    // *** END REFACTORED Canvas ***
-
-
-                                    // Text inside (Updated)
-                                    Text(
-                                        text = stringResource(R.string.dashboard_progress_text, formatDuration(remainingMs)), // Use stringResource
-                                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                                        textAlign = TextAlign.Center
-                                    )
-                                }
-                            } else {
-                                // Placeholder if goal isn't set (Updated)
-                                Text(stringResource(R.string.dashboard_progress_goal_not_set), style = MaterialTheme.typography.bodyLarge) // Use stringResource
-                                Spacer(modifier = Modifier.height(24.dp))
-                            } // End Circular Progress Box
-
-
-                            // --- Daily Commitment Text ---
-                            Text(stringResource(R.string.dashboard_commitment_section_title), style = MaterialTheme.typography.titleMedium) // Use stringResource
-                            Spacer(modifier = Modifier.height(8.dp))
-                            // Use a simple Card for background/border or just Text
-                            Card(
-                                modifier = Modifier.fillMaxWidth(),
-                                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
-                            ) {
-                                val commitmentText = when(condition) { // Use resolved stringResource results
-                                    StudyPhase.INTERVENTION_CONTROL -> stringResource(R.string.dashboard_commitment_control)
-                                    StudyPhase.INTERVENTION_DEPOSIT -> stringResource(R.string.dashboard_commitment_deposit)
-                                    StudyPhase.INTERVENTION_FLEXIBLE -> stringResource(R.string.dashboard_commitment_flex, flexEarn ?: "-", flexLose ?: "-")
-                                    else -> stringResource(R.string.dashboard_commitment_fallback)
-                                }
-                                Text(
-                                    text = commitmentText, // Use resolved string
-                                    style = MaterialTheme.typography.bodyLarge,
-                                    textAlign = TextAlign.Center,
-                                    modifier = Modifier.padding(16.dp).fillMaxWidth() // Padding inside card
-                                )
-                            } // End Card Commitment
-                            Spacer(modifier = Modifier.height(16.dp)) // Space at the very bottom if needed
-
-
-                        } // End Main Intervention Column
-                    } // End INTERVENTION_* case
-
-
-                    StudyPhase.REGISTERED -> { // --- Registered UI (Text updated) ---
-                        Text(stringResource(R.string.home_registered_title), style = MaterialTheme.typography.headlineMedium) // Use stringResource
                         Spacer(modifier = Modifier.height(16.dp))
-                        Text(stringResource(R.string.home_registered_message), textAlign = TextAlign.Center) // Use stringResource
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Button(onClick = { currentStudyPhase = StudyStateManager.getStudyPhase(context) }) { Text(stringResource(R.string.home_registered_refresh_button)) } // Use stringResource
-                    } // End REGISTERED case
-
-
-                    StudyPhase.COMPLETED -> { // --- Completed UI (Text updated) ---
-                        Text(stringResource(R.string.home_completed_title), style = MaterialTheme.typography.headlineMedium) // Use stringResource
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text(stringResource(R.string.home_completed_message), textAlign = TextAlign.Center) // Use stringResource
-                    } // End COMPLETED case
-
-
-                } // End of when(currentStudyPhase)
-
-
-                // --- Logout Button (Positioned at bottom regardless of phase content) ---
-                Spacer(modifier = Modifier.weight(1f)) // Pushes button to bottom
-                Button(onClick = {
-                    Log.d("HomeScreen", "Logout clicked.")
-                    // 1. Stop services (if applicable)
-                    try { context.stopService(Intent(context, UsageTrackingService::class.java)); Log.d("HomeScreen", "Service stop issued.") }
-                    catch (e: Exception) { Log.e("HomeScreen", "Error stopping service.", e) }
-
-
-                    // 2. Sign out from Firebase *FIRST*
-                    Firebase.auth.signOut() // This call is now valid due to the import
-
-
-                    // 3. Clear local study state *AFTER* Firebase sign out
-                    StudyStateManager.clearStudyState(context) // Clear local prefs
-
-
-                    // 4. Clear relevant ViewModel state
-                    // Ensure homeViewModel instance is accessible in this scope
-                    homeViewModel.refreshTargetApp() // Example: Clear target app in VM
-
-
-                    // 5. Navigate *LAST*
-                    navController.navigate(Screen.AuthDecision.route) {
-                        popUpTo(Screen.Home.route) { inclusive = true } // Clear backstack up to Home
-                        launchSingleTop = true
-                    }
-                }) { Text(stringResource(R.string.home_logout_button)) }
-                Spacer(modifier = Modifier.height(16.dp)) // Padding below logout button
-                // --- End Logout Button ---
-
-
-            } // END of else block: if(needsFlexSetup)
-
-
-        } else { // showPermissionPrompts is true
-            // --- Display Permission Prompts --- (Text updated)
-            Column( // Use a Column to center the prompts vertically
-                modifier = Modifier.fillMaxSize(), // Take full space
-                verticalArrangement = Arrangement.Center, // Center vertically
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Text(
-                    stringResource(R.string.home_permission_title), // Use stringResource
-                    style = MaterialTheme.typography.headlineMedium,
-                    textAlign = TextAlign.Center
-                )
-                Spacer(modifier = Modifier.height(16.dp))
-
-
-                // Notification Permission Prompt
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !hasNotificationPermission) {
-                    Text(
-                        stringResource(R.string.home_permission_notification_message), // Use stringResource
-                        style = MaterialTheme.typography.bodyLarge,
-                        textAlign = TextAlign.Center
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Button(onClick = { notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) }) {
-                        Text(stringResource(R.string.home_permission_notification_button)) // Use stringResource
-                    }
-                    Spacer(modifier = Modifier.height(24.dp))
-                }
-
-
-                // Usage Stats Permission Prompt
-                if (!hasUsageStatsPermission) {
-                    Text(
-                        stringResource(R.string.home_permission_usage_message), // Use stringResource
-                        style = MaterialTheme.typography.bodyLarge,
-                        textAlign = TextAlign.Center
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Button(onClick = {
-                        try {
-                            val intent = PermissionsUtils.getUsageStatsPermissionIntent()
-                            startActivity(context, intent, null)
-                        } catch (e: Exception) {
-                            Log.e("HomeScreen", "Error opening Usage Access Settings: ${e.message}", e)
+                        Button(onClick = { notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) }) {
+                            Text(stringResource(R.string.home_permission_notification_button)) // Use stringResource
                         }
-                    }) {
-                        Text(stringResource(R.string.home_permission_usage_button)) // Use stringResource
+                        Spacer(modifier = Modifier.height(24.dp))
                     }
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Button(onClick = {
-                        hasUsageStatsPermission = PermissionsUtils.hasUsageStatsPermission(context)
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                            hasNotificationPermission = ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
+
+                    // Usage Stats Permission Prompt
+                    if (!hasUsageStatsPermission) {
+                        Text(
+                            stringResource(R.string.home_permission_usage_message), // Use stringResource
+                            style = MaterialTheme.typography.bodyLarge,
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Button(onClick = {
+                            try {
+                                val intent = PermissionsUtils.getUsageStatsPermissionIntent()
+                                startActivity(context, intent, null)
+                            } catch (e: Exception) {
+                                Log.e("HomeScreen", "Error opening Usage Access Settings: ${e.message}", e)
+                            }
+                        }) {
+                            Text(stringResource(R.string.home_permission_usage_button)) // Use stringResource
                         }
-                        Log.d("HomeScreen", "Manual permission check results - UsageStats: $hasUsageStatsPermission, Notification: $hasNotificationPermission")
-                    }) {
-                        Text(stringResource(R.string.home_permission_check_button)) // Use stringResource
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Button(onClick = {
+                            hasUsageStatsPermission = PermissionsUtils.hasUsageStatsPermission(context)
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                hasNotificationPermission = ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                            }
+                            Log.d("HomeScreen", "Manual permission check results - UsageStats: $hasUsageStatsPermission, Notification: $hasNotificationPermission")
+                        }) {
+                            Text(stringResource(R.string.home_permission_check_button)) // Use stringResource
+                        }
                     }
-                }
 
 
-                Spacer(modifier = Modifier.height(32.dp))
+                    Spacer(modifier = Modifier.height(32.dp))
 
 
-                // Logout Button (Available even if permissions aren't granted)
-                Button(onClick = {
-                    Log.d("HomeScreen", "Logout clicked while permissions pending.")
-                    StudyStateManager.clearStudyState(context)
-                    homeViewModel.refreshTargetApp() // Clear VM state too
-                    navController.navigate(Screen.AuthDecision.route) { popUpTo(Screen.Home.route) { inclusive = true }; launchSingleTop = true }
-                }) { Text(stringResource(R.string.home_logout_button)) } // Use stringResource
-            } // End Column for Prompts
-        } // End of else block (showPermissionPrompts)
-    } // End of Main Column
+                    // Logout Button (Available even if permissions aren't granted)
+                    // Now handled by the universal TopAppBar menu.
+                } // End Column for Prompts
+            } // End of else block (showPermissionPrompts)
+        } // End of Main Column
+    } // End of Main Scaffold
 }
 
 
@@ -1084,6 +1038,52 @@ fun FlexibleDepositSetupUI(onConfirm: (earn: Int, lose: Int) -> Unit) {
 
         Button(onClick = { onConfirm(earnValue.toInt(), loseValue.toInt()) }) {
             Text(stringResource(R.string.flex_setup_confirm_button)) // Use stringResource
+        }
+    }
+}
+
+
+@Composable
+fun BaselineAnalysisCard(
+    modifier: Modifier = Modifier,
+    startTime: Long,
+    onBaselineComplete: () -> Unit
+) {
+    // This is now simplified. The logic is primarily in the ViewModel
+    // and the phase transition is handled by onBaselineComplete.
+    val baselineDurationMinutes = Constants.BASELINE_DURATION_MINUTES
+    val timeElapsedMs = if (startTime > 0) System.currentTimeMillis() - startTime else 0
+
+    if (timeElapsedMs >= TimeUnit.MINUTES.toMillis(baselineDurationMinutes)) {
+        LaunchedEffect(Unit) { onBaselineComplete() }
+    }
+
+    val minutesElapsed = TimeUnit.MILLISECONDS.toMinutes(timeElapsedMs)
+    val progress = if (baselineDurationMinutes > 0) {
+        (minutesElapsed.toFloat() / baselineDurationMinutes).coerceIn(0f, 1f)
+    } else 0f
+
+    Card(modifier = modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text("Baseline Analysis", style = MaterialTheme.typography.titleLarge)
+            Spacer(modifier = Modifier.height(16.dp))
+            LinearProgressIndicator(
+                progress = { progress },
+                modifier = Modifier.fillMaxWidth().height(8.dp)
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+
+            val minutesRemaining = baselineDurationMinutes - minutesElapsed
+            if (minutesRemaining > 0) {
+                Text(text = "Minute ${minutesElapsed + 1} of $baselineDurationMinutes.")
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(text = "You can set your goal in $minutesRemaining minutes.")
+            } else {
+                Text(text = "Analysis complete.")
+            }
         }
     }
 }

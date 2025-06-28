@@ -72,14 +72,26 @@
     <string name="home_permission_check_button">Check Permissions Again</string>
 
 
+    <!-- NEW: Home Screen Titles -->
+    <string name="home_phase_title_baseline">Baseline Analysis</string>
+    <string name="home_phase_title_goal_setting">Set Your Goal</string>
+    <string name="home_phase_title_intervention">Dashboard</string>
+    <string name="home_phase_title_registered">Registration Complete</string>
+    <string name="home_phase_title_completed">Study Complete</string>
+
+
+    <!-- NEW: Home Screen Menu -->
+    <string name="home_menu_description">More options</string>
+
+
     <!-- Goal Setting -->
     <string name="goal_setting_loading_title">Analyzing Baseline Usage...</string>
     <string name="goal_setting_error_title">Error Loading Baseline Data</string>
     <string name="goal_setting_error_message">Please ensure the app had permission during the baseline week and try again.</string>
     <string name="goal_setting_retry_button">Retry</string>
     <string name="goal_setting_saved_title">Goal Saved!</string>
-    <string name="goal_setting_title">Set Your Goal</string>
-    <string name="goal_setting_suggestion_with_app">Based on your usage last week, your most used app was %1$s. Select an app below to focus on reducing its usage.</string>
+    <string name="goal_setting_title">Time to Set Your Goal</string>
+    <string name="goal_setting_suggestion_with_app">Based on your usage, we suggest targeting \"%1$s\".</string>
     <string name="goal_setting_suggestion_no_app">Select an app below to focus on reducing its usage.</string>
     <string name="goal_setting_selection_title">Which app do you want to reduce time use?</string>
     <string name="goal_setting_app_icon_description">%1$s icon</string>

@@ -15,6 +15,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import java.util.Calendar
+import java.util.concurrent.TimeUnit
 
 
 // Apply changes from <change> to the starter <code>
@@ -81,25 +82,26 @@ class DailyCheckWorker(appContext: Context, workerParams: WorkerParameters) :
                 // --- End Validation ---
 
 
-                // 1. Calculate Timestamps for Previous Day
-                val (prevDayStart, _) = getPreviousDayTimestamps() // Only need start for daily DAO query
+                // 1. Calculate Timestamps for Previous Interval
+                val (intervalStart, intervalEnd) = getPreviousIntervalTimestamps()
 
 
-                // 2. Query Database for Previous Day's Usage
+                // 2. Query Database for Previous Interval's Usage
                 val dao = AppDatabase.getDatabase(applicationContext).usageStatDao()
-                // --- Corrected DAO Call: Pass userId, packageName, dayTimestamp ---
-                val totalUsageMs = dao.getTotalDurationForAppOnDay(
-                    userId = userId, // Pass the userId obtained earlier
-                    packageName = targetApp, // Correct position
-                    dayTimestamp = prevDayStart // Correct position
+                val totalUsageMs = dao.getTotalDurationForAppInRange(
+                    userId = userId,
+                    packageName = targetApp,
+                    startTime = intervalStart,
+                    endTime = intervalEnd
                 ) ?: 0L
-                // --- End Corrected DAO Call ---
-                Log.i(TAG, "Previous day ($prevDayStart) total usage for $targetApp: ${totalUsageMs / 1000.0} seconds")
+                Log.i(TAG, "Previous interval ($intervalStart to $intervalEnd) total usage for $targetApp: ${totalUsageMs / 1000.0} seconds")
 
 
                 // 3. Compare Usage to Goal
-                val goalReached = totalUsageMs <= dailyGoalMs // Removed !! assertion as validation ensures not null
-                Log.i(TAG, "Daily goal ($dailyGoalMs ms): ${if(goalReached) "REACHED" else "MISSED"}")
+                // The goal is daily, so we must scale it to the interval
+                val intervalGoalMs = (dailyGoalMs.toDouble() / (24 * 60) * Constants.DAILY_CHECK_INTERVAL_MINUTES).toLong()
+                val goalReached = totalUsageMs <= intervalGoalMs
+                Log.i(TAG, "Interval goal ($intervalGoalMs ms): ${if(goalReached) "REACHED" else "MISSED"}")
 
 
                 // 4. Determine Points Change based on Condition
@@ -138,6 +140,11 @@ class DailyCheckWorker(appContext: Context, workerParams: WorkerParameters) :
     }
 
 
+    private fun getPreviousIntervalTimestamps(): Pair<Long, Long> {
+        val endTime = System.currentTimeMillis()
+        val startTime = endTime - TimeUnit.MINUTES.toMillis(Constants.DAILY_CHECK_INTERVAL_MINUTES)
+        return Pair(startTime, endTime)
+    }
 
 
     // Unchanged as per <change> which used /* ... */

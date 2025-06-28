@@ -1,12 +1,18 @@
 package com.niyaz.zario.ui.viewmodels
 
 
+import android.app.Application
+import android.content.Context
 import android.util.Log
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.niyaz.zario.data.model.AppBaselineInfo
 import com.niyaz.zario.data.repository.StudyRepository
+import com.niyaz.zario.utils.Constants
+import com.niyaz.zario.workers.DailyCheckWorker
+import com.niyaz.zario.workers.FirestoreSyncWorker
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -25,10 +31,13 @@ import java.time.LocalDateTime
 import java.time.ZoneId
 import java.util.Calendar
 import java.util.concurrent.TimeUnit
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.ExistingPeriodicWorkPolicy
 
 
 // --- CHANGE: Constructor takes Repository, extends ViewModel ---
-class HomeViewModel(private val repository: StudyRepository) : ViewModel() {
+class HomeViewModel(application: Application, private val repository: StudyRepository) : AndroidViewModel(application) {
 
 
     private val TAG = "HomeViewModel" // Add TAG
@@ -95,6 +104,9 @@ class HomeViewModel(private val repository: StudyRepository) : ViewModel() {
 
             // Start collecting usage immediately
             startOrUpdateUsageCollection()
+
+            // --- Enqueue Periodic Workers ---
+            enqueuePeriodicWorkers()
         }
 
 
@@ -130,7 +142,7 @@ class HomeViewModel(private val repository: StudyRepository) : ViewModel() {
                 combine(
                     // Pass userId to the repository method
                     repository.getTodayUsageForAppFlow(userId, currentTargetApp, todayStartMs),
-                    tickerFlow(TimeUnit.MINUTES.toMillis(5)) // Check every 5 mins
+                    tickerFlow(TimeUnit.SECONDS.toMillis(Constants.USAGE_TICKER_INTERVAL_SECONDS)) // Use constant
                 ) { usage, _ -> usage } // Combine logic: take the usage value
                     .catch { e -> Log.e(TAG, "Error collecting today's usage flow for user $userId", e) }
                     .distinctUntilChanged() // Only emit if the usage value changes
@@ -187,8 +199,8 @@ class HomeViewModel(private val repository: StudyRepository) : ViewModel() {
                 }
 
 
-                val baselineDurationDays = 7
-                val baselineEndTime = baselineStartTime + TimeUnit.DAYS.toMillis(baselineDurationDays.toLong())
+                val baselineDurationMinutes = Constants.BASELINE_DURATION_MINUTES
+                val baselineEndTime = baselineStartTime + TimeUnit.MINUTES.toMillis(baselineDurationMinutes)
                 val now = System.currentTimeMillis()
 
 
@@ -199,7 +211,13 @@ class HomeViewModel(private val repository: StudyRepository) : ViewModel() {
                 }
 
 
-                Log.d(TAG, "Fetching baseline usage for user $userId between $baselineStartTime and $baselineEndTime")
+                // --- FIX: Correctly calculate the number of days in the baseline period ---
+                val actualBaselineDurationMs = baselineEndTime - baselineStartTime
+                val baselineDurationDays = (TimeUnit.MILLISECONDS.toDays(actualBaselineDurationMs)).coerceAtLeast(1)
+                // --- End FIX ---
+
+
+                Log.d(TAG, "Fetching baseline usage for user $userId between $baselineStartTime and $baselineEndTime ($baselineDurationDays days)")
                 // --- Use Repository, passing userId ---
                 val aggregatedUsage = repository.getAggregatedUsageForBaseline(userId, baselineStartTime, baselineEndTime)
                 val hourlyRecords = repository.getAllUsageRecordsForBaseline(userId, baselineStartTime, baselineEndTime)
@@ -352,9 +370,8 @@ class HomeViewModel(private val repository: StudyRepository) : ViewModel() {
     }
 
 
-    private fun tickerFlow(period: Long, initialDelay: Long = 0L) = flow {
-        delay(initialDelay)
-        while(true) {
+    private fun tickerFlow(period: Long) = flow {
+        while (true) {
             emit(Unit)
             delay(period)
         }
@@ -381,15 +398,52 @@ class HomeViewModel(private val repository: StudyRepository) : ViewModel() {
     // --- Add Factory for ViewModel Instantiation ---
     companion object {
         fun provideFactory(
+            application: Application,
             repository: StudyRepository
         ): ViewModelProvider.Factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T {
                 if (modelClass.isAssignableFrom(HomeViewModel::class.java)) {
-                    return HomeViewModel(repository) as T
+                    return HomeViewModel(application, repository) as T
                 }
                 throw IllegalArgumentException("Unknown ViewModel class")
             }
         }
+    }
+
+
+    // --- Worker Scheduling ---
+    private fun enqueuePeriodicWorkers() {
+        Log.d(TAG, "Enqueuing periodic background workers.")
+        val workManager = WorkManager.getInstance(getApplication())
+
+
+        // --- Daily Check Worker ---
+        val dailyCheckRequest = PeriodicWorkRequestBuilder<DailyCheckWorker>(
+            Constants.DAILY_CHECK_INTERVAL_MINUTES, TimeUnit.MINUTES
+        ).build()
+
+
+        workManager.enqueueUniquePeriodicWork(
+            DailyCheckWorker.UNIQUE_WORK_NAME,
+            ExistingPeriodicWorkPolicy.KEEP, // Keep existing work if it's already scheduled
+            dailyCheckRequest
+        )
+        Log.d(TAG, "Enqueued ${DailyCheckWorker.UNIQUE_WORK_NAME} to run every ${Constants.DAILY_CHECK_INTERVAL_MINUTES} minutes.")
+
+
+        // --- Firestore Sync Worker ---
+        val firestoreSyncRequest = PeriodicWorkRequestBuilder<FirestoreSyncWorker>(
+            Constants.FIRESTORE_SYNC_INTERVAL_MINUTES, TimeUnit.MINUTES
+        ).setConstraints(FirestoreSyncWorker.WORKER_CONSTRAINTS)
+            .build()
+
+
+        workManager.enqueueUniquePeriodicWork(
+            FirestoreSyncWorker.UNIQUE_WORK_NAME,
+            ExistingPeriodicWorkPolicy.KEEP,
+            firestoreSyncRequest
+        )
+        Log.d(TAG, "Enqueued ${FirestoreSyncWorker.UNIQUE_WORK_NAME} to run every ${Constants.FIRESTORE_SYNC_INTERVAL_MINUTES} minutes.")
     }
 }

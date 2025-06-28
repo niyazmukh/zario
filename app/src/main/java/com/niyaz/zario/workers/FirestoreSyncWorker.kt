@@ -38,7 +38,7 @@ class FirestoreSyncWorker(appContext: Context, workerParams: WorkerParameters) :
             .setRequiredNetworkType(NetworkType.CONNECTED) // Only run when connected
             .build()
         // How often to run the sync (e.g., every 6 hours)
-        val REPEAT_INTERVAL_HOURS = 1L
+        val REPEAT_INTERVAL_HOURS = Constants.FIRESTORE_SYNC_INTERVAL_MINUTES
         // Batch size for processing local records
         const val BATCH_SIZE = 100
     }

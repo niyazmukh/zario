@@ -25,6 +25,7 @@
     <string name="login_error_invalid_credentials">Login failed: Invalid email or password.</string>
     <string name="login_error_session_verification">Login failed: Could not verify user session.</string>
     <string name="login_error_load_study_data">Login successful, but couldn\'t load study data. Please contact support.</string>
+    <string name="login_error_unexpected">An unexpected error occurred during login. Please try again.</string>
     <string name="login_button">Log In</string>
     <string name="login_reset_dialog_title">Reset Password</string>
     <string name="login_reset_dialog_message">Enter your email address to receive a password reset link.</string>
@@ -48,6 +49,7 @@
     <string name="register_validation_password_length">Password must be at least 8 characters</string>
     <string name="register_validation_password_mismatch">Passwords do not match</string>
     <string name="register_error_profile_save">Account created, but failed to save profile data. Please try logging in.</string>
+    <string name="register_error_profile_creation">An error occurred while creating your user profile.</string>
     <string name="register_error_user_id">Registration failed: Could not get user ID.</string>
     <string name="register_error_email_collision">Registration failed: Email address already in use.</string>
     <string name="register_error_generic">Registration failed. Please try again later.</string> <!-- Reuses generic error -->

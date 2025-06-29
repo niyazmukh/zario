@@ -2,7 +2,11 @@ package com.niyaz.zario.ui.viewmodels
 
 
 import android.app.Application
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.os.Build
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
@@ -43,9 +47,9 @@ class HomeViewModel(application: Application, private val repository: StudyRepos
     private val TAG = "HomeViewModel" // Add TAG
 
 
-    // --- State for Current Day Usage ---
-    private val _todayUsageMs = MutableStateFlow<Long>(0L)
-    val todayUsageMs: StateFlow<Long> = _todayUsageMs.asStateFlow()
+    // --- State for Current Interval Usage ---
+    private val _currentIntervalUsageMs = MutableStateFlow<Long>(0L)
+    val currentIntervalUsageMs: StateFlow<Long> = _currentIntervalUsageMs.asStateFlow()
 
 
     // State for hourly usage data
@@ -82,10 +86,35 @@ class HomeViewModel(application: Application, private val repository: StudyRepos
     private var currentUserId: String? = null
 
 
+    // --- FIX: BroadcastReceiver for usage updates ---
+    private val usageUpdateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == Constants.ACTION_USAGE_UPDATE) {
+                val usageMs = intent.getLongExtra(Constants.EXTRA_USAGE_MS, 0L)
+                _currentIntervalUsageMs.value = usageMs
+                Log.d(TAG, "Received usage update via broadcast: $usageMs ms")
+            }
+        }
+    }
 
 
     init {
         Log.d(TAG, "ViewModel Initializing")
+
+
+        // --- FIX: Register the receiver with the required security flag ---
+        val intentFilter = IntentFilter(Constants.ACTION_USAGE_UPDATE)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            getApplication<Application>().registerReceiver(
+                usageUpdateReceiver,
+                intentFilter,
+                Context.RECEIVER_NOT_EXPORTED
+            )
+        } else {
+            getApplication<Application>().registerReceiver(usageUpdateReceiver, intentFilter)
+        }
+
+
         viewModelScope.launch { // Use viewModelScope directly
             // Fetch and store userId first
             currentUserId = repository.getUserId() // Get userId from repository
@@ -103,7 +132,10 @@ class HomeViewModel(application: Application, private val repository: StudyRepos
 
 
             // Start collecting usage immediately
-            startOrUpdateUsageCollection()
+            // REMOVED: The usage collection flow is no longer needed here.
+            // startOrUpdateUsageCollection()
+            // The service runs independently now and communicates via broadcast.
+
 
             // --- Enqueue Periodic Workers ---
             enqueuePeriodicWorkers()
@@ -117,7 +149,8 @@ class HomeViewModel(application: Application, private val repository: StudyRepos
                 .distinctUntilChanged()
                 .collect { currentTargetApp ->
                     Log.d(TAG, "Target app changed to: $currentTargetApp. Restarting usage collection.")
-                    startOrUpdateUsageCollection() // Restart collection when target changes
+                    // REMOVED: The usage collection flow is no longer needed here.
+                    // startOrUpdateUsageCollection()
                 }
         }
 
@@ -125,11 +158,12 @@ class HomeViewModel(application: Application, private val repository: StudyRepos
     } // End Init
 
 
+    // REMOVED: This function is no longer needed as the ViewModel does not collect usage directly.
+    /*
     private fun startOrUpdateUsageCollection() {
         usageCollectionJob?.cancel() // Cancel previous collection job if running
         val currentTargetApp = targetAppFlow.value
         val userId = currentUserId // Use the stored userId
-
 
         // Ensure both userId and targetApp are available
         if (userId != null && currentTargetApp != null) {
@@ -137,32 +171,30 @@ class HomeViewModel(application: Application, private val repository: StudyRepos
                 val todayStartMs = getStartOfDayTimestamp(System.currentTimeMillis())
                 Log.d(TAG, "Collecting today's usage flow for user $userId, app: $currentTargetApp, DayStart: $todayStartMs")
 
-
                 // Combine repository flow with a ticker to ensure updates even if DB doesn't change frequently
                 combine(
                     // Pass userId to the repository method
-                    repository.getTodayUsageForAppFlow(userId, currentTargetApp, todayStartMs),
+                    repository.getUsageForIntervalFlow(userId, currentTargetApp, todayStartMs),
                     tickerFlow(TimeUnit.SECONDS.toMillis(Constants.USAGE_TICKER_INTERVAL_SECONDS)) // Use constant
                 ) { usage, _ -> usage } // Combine logic: take the usage value
                     .catch { e -> Log.e(TAG, "Error collecting today's usage flow for user $userId", e) }
                     .distinctUntilChanged() // Only emit if the usage value changes
                     .collect { usage ->
                         val currentUsage = usage ?: 0L
-                        if (_todayUsageMs.value != currentUsage) {
-                            _todayUsageMs.value = currentUsage
+                        if (_currentIntervalUsageMs.value != currentUsage) {
+                            _currentIntervalUsageMs.value = currentUsage
                             // Log only on change to reduce noise
-                            Log.d(TAG, "Updated todayUsageMs for user $userId: ${_todayUsageMs.value}")
+                            Log.d(TAG, "Updated currentIntervalUsageMs for user $userId: ${_currentIntervalUsageMs.value}")
                         }
                     }
             }
         } else {
             // If target app becomes null or userId is missing, reset usage to 0
-            _todayUsageMs.value = 0L
+            _currentIntervalUsageMs.value = 0L
             Log.d(TAG, "Target app ($currentTargetApp) or User ID ($userId) is null. Usage set to 0. Usage collection stopped.")
         }
     }
-
-
+    */
 
 
     // --- Baseline Analysis Logic ---
@@ -359,6 +391,12 @@ class HomeViewModel(application: Application, private val repository: StudyRepos
     } // End confirmGoalSelection
 
 
+    // --- FIX: Unregister receiver on clear ---
+    override fun onCleared() {
+        super.onCleared()
+        getApplication<Application>().unregisterReceiver(usageUpdateReceiver)
+        Log.d(TAG, "ViewModel cleared and usage receiver unregistered.")
+    }
 
 
     // --- Helper Functions ---

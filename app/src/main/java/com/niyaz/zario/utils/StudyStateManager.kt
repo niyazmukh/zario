@@ -7,7 +7,7 @@ import android.util.Log
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ktx.firestore
 import com.google.firebase.ktx.Firebase
-import com.niyaz.zario.StudyPhase
+import com.niyaz.zario.utils.StudyPhase
 import kotlinx.coroutines.tasks.await
 
 
@@ -25,9 +25,9 @@ object StudyStateManager {
     private const val KEY_FLEX_POINTS_EARN = Constants.KEY_FLEX_POINTS_EARN
     private const val KEY_FLEX_POINTS_LOSE = Constants.KEY_FLEX_POINTS_LOSE
     private const val KEY_USER_ID = Constants.KEY_USER_ID
-    private const val KEY_LAST_DAILY_CHECK_TIMESTAMP = Constants.KEY_LAST_DAILY_CHECK_TIMESTAMP
-    private const val KEY_LAST_DAY_GOAL_REACHED = Constants.KEY_LAST_DAY_GOAL_REACHED
-    private const val KEY_LAST_DAY_POINTS_CHANGE = Constants.KEY_LAST_DAY_POINTS_CHANGE
+    private const val KEY_LAST_EVAL_TIMESTAMP = Constants.KEY_LAST_EVAL_TIMESTAMP
+    private const val KEY_LAST_EVAL_GOAL_REACHED = Constants.KEY_LAST_EVAL_GOAL_REACHED
+    private const val KEY_LAST_EVAL_POINTS_CHANGE = Constants.KEY_LAST_EVAL_POINTS_CHANGE
 
 
     private const val TAG = "StudyStateManager" // Add TAG
@@ -143,21 +143,21 @@ object StudyStateManager {
     }
 
 
-    fun saveDailyOutcome(context: Context, checkTimestamp: Long, goalReached: Boolean, pointsChange: Int) {
+    fun saveIntervalOutcome(context: Context, checkTimestamp: Long, goalReached: Boolean, pointsChange: Int) {
         getPreferences(context).edit()
-            .putLong(KEY_LAST_DAILY_CHECK_TIMESTAMP, checkTimestamp)
-            .putBoolean(KEY_LAST_DAY_GOAL_REACHED, goalReached)
-            .putInt(KEY_LAST_DAY_POINTS_CHANGE, pointsChange)
+            .putLong(KEY_LAST_EVAL_TIMESTAMP, checkTimestamp)
+            .putBoolean(KEY_LAST_EVAL_GOAL_REACHED, goalReached)
+            .putInt(KEY_LAST_EVAL_POINTS_CHANGE, pointsChange)
             .apply()
-        Log.d(TAG, "Saved Daily Outcome: Time=$checkTimestamp, Reached=$goalReached, Change=$pointsChange")
+        Log.d(TAG, "Saved Interval Outcome: Time=$checkTimestamp, Reached=$goalReached, Change=$pointsChange")
     }
 
 
-    fun getLastDailyOutcome(context: Context): Triple<Long?, Boolean?, Int?> {
+    fun getLastIntervalOutcome(context: Context): Triple<Long?, Boolean?, Int?> {
         val prefs = getPreferences(context)
-        val timestamp = if(prefs.contains(KEY_LAST_DAILY_CHECK_TIMESTAMP)) prefs.getLong(KEY_LAST_DAILY_CHECK_TIMESTAMP, 0L) else null
-        val reached = if(prefs.contains(KEY_LAST_DAY_GOAL_REACHED)) prefs.getBoolean(KEY_LAST_DAY_GOAL_REACHED, false) else null
-        val change = if(prefs.contains(KEY_LAST_DAY_POINTS_CHANGE)) prefs.getInt(KEY_LAST_DAY_POINTS_CHANGE, 0) else null
+        val timestamp = if(prefs.contains(KEY_LAST_EVAL_TIMESTAMP)) prefs.getLong(KEY_LAST_EVAL_TIMESTAMP, 0L) else null
+        val reached = if(prefs.contains(KEY_LAST_EVAL_GOAL_REACHED)) prefs.getBoolean(KEY_LAST_EVAL_GOAL_REACHED, false) else null
+        val change = if(prefs.contains(KEY_LAST_EVAL_POINTS_CHANGE)) prefs.getInt(KEY_LAST_EVAL_POINTS_CHANGE, 0) else null
         return Triple(timestamp, reached, change)
     }
 

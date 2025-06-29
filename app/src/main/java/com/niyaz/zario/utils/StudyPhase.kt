@@ -1,4 +1,4 @@
-package com.niyaz.zario
+package com.niyaz.zario.utils
 
 
 enum class StudyPhase {

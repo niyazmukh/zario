@@ -87,7 +87,7 @@ import com.google.firebase.auth.ktx.auth
 import com.google.firebase.firestore.ktx.firestore
 import com.google.firebase.ktx.Firebase
 import com.niyaz.zario.R
-import com.niyaz.zario.StudyPhase
+import com.niyaz.zario.utils.StudyPhase
 import com.niyaz.zario.data.local.AppDatabase
 import com.niyaz.zario.data.model.AppBaselineInfo
 import com.niyaz.zario.data.repository.StudyRepository
@@ -132,7 +132,7 @@ fun HomeScreen(
     var studyPhase by remember { mutableStateOf(StudyStateManager.getStudyPhase(context)) }
 
     // --- Collect State from ViewModel ---
-    val todayUsageMs by viewModel.todayUsageMs.collectAsState()
+    val currentIntervalUsageMs by viewModel.currentIntervalUsageMs.collectAsState()
     val goalSettingState by viewModel.goalSettingState.collectAsState()
     val baselineAppList by viewModel.baselineAppList.collectAsState()
     val suggestedApp by viewModel.suggestedApp.collectAsState()
@@ -502,9 +502,9 @@ fun HomeScreen(
                                             .aspectRatio(1f) // Make it a square for a perfect circle
                                             .padding(bottom = 24.dp)
                                     ) {
-                                        val remainingMs = (goalMs - todayUsageMs).coerceAtLeast(0L)
+                                        val remainingMs = (goalMs - currentIntervalUsageMs).coerceAtLeast(0L)
                                         // Progress for indicator filling: 0.0 means full time left, 1.0 means no time left
-                                        val progressFraction = (todayUsageMs.toFloat() / goalMs.toFloat()).coerceIn(0f, 1f)
+                                        val progressFraction = (currentIntervalUsageMs.toFloat() / goalMs.toFloat()).coerceIn(0f, 1f)
                                         val sweepAngle = progressFraction * 360f
                                         val strokeWidth = 12.dp // Define stroke width
                                         // val primaryColor = MaterialTheme.colorScheme.primary // Read color from theme (already defined above)

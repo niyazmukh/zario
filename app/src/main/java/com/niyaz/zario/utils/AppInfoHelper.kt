@@ -15,6 +15,7 @@ object AppInfoHelper {
     private const val TAG = "AppInfoHelper"
     // Cache now includes Drawable?
     private val appInfoCache = mutableMapOf<String, AppDetails>()
+    private var defaultIconCache: Drawable? = null
 
 
     data class AppDetails(
@@ -26,6 +27,13 @@ object AppInfoHelper {
     // Keep getAppName for simplicity if only name is needed elsewhere
     fun getAppName(context: Context, packageName: String): String {
         return getAppDetails(context, packageName).appName
+    }
+
+    private fun getDefaultIcon(context: Context): Drawable? {
+        if (defaultIconCache == null) {
+            defaultIconCache = ResourcesCompat.getDrawable(context.resources, android.R.mipmap.sym_def_app_icon, null)
+        }
+        return defaultIconCache
     }
 
 
@@ -43,7 +51,7 @@ object AppInfoHelper {
 
 
         val pm = context.packageManager
-        val defaultIcon = ResourcesCompat.getDrawable(context.resources, android.R.mipmap.sym_def_app_icon, null) // Standard default icon
+        val defaultIcon = getDefaultIcon(context)
 
 
         return try {
@@ -71,5 +79,6 @@ object AppInfoHelper {
 
     fun clearCache() {
         appInfoCache.clear()
+        defaultIconCache = null
     }
 }

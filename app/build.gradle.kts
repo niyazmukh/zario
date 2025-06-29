@@ -1,9 +1,10 @@
         plugins {
             alias(libs.plugins.android.application)
             alias(libs.plugins.kotlin.android)
-            alias(libs.plugins.compose.compiler) // <<< ADD THIS LINE
-            alias(libs.plugins.kotlin.devtools.ksp) // <<< ADD THIS LINE
-            alias(libs.plugins.google.services) // <<< ADD THIS LINE
+            alias(libs.plugins.compose.compiler)
+            alias(libs.plugins.kotlin.devtools.ksp)
+            alias(libs.plugins.google.services)
+            alias(libs.plugins.androidx.room)
 
 
 
@@ -22,7 +23,6 @@ android {
         targetSdk = 35 // Target SDK should match compileSdk
         versionCode = 1
         versionName = "1.0"
-
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Vector Drawables are generally preferred
@@ -62,6 +62,9 @@ android {
     }
 }
 
+room {
+    schemaDirectory("$projectDir/schemas")
+}
 
 dependencies {
 

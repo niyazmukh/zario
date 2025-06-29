@@ -21,9 +21,9 @@ object Constants {
    const val KEY_FLEX_POINTS_EARN = "flex_points_earn"
    const val KEY_FLEX_POINTS_LOSE = "flex_points_lose"
    const val KEY_USER_ID = "user_id"
-   const val KEY_LAST_DAILY_CHECK_TIMESTAMP = "last_daily_check_timestamp"
-   const val KEY_LAST_DAY_GOAL_REACHED = "last_day_goal_reached"
-   const val KEY_LAST_DAY_POINTS_CHANGE = "last_day_points_change"
+   const val KEY_LAST_EVAL_TIMESTAMP = "last_eval_timestamp"
+   const val KEY_LAST_EVAL_GOAL_REACHED = "last_eval_goal_reached"
+   const val KEY_LAST_EVAL_POINTS_CHANGE = "last_eval_points_change"
 
 
    // --- Firestore ---
@@ -55,12 +55,19 @@ object Constants {
    const val FIRESTORE_SYNC_WORKER_NAME = "ZarioFirestoreSync"
 
 
+   // --- Service Actions & Extras ---
+   const val ACTION_USAGE_UPDATE = "com.niyaz.zario.ACTION_USAGE_UPDATE"
+   const val EXTRA_USAGE_MS = "extra_usage_ms"
+
+
    // --- Time Durations ---
    val DAILY_CHECK_INTERVAL_MINUTES: Long = 15
    val FIRESTORE_SYNC_INTERVAL_MINUTES: Long = 5
    val BASELINE_DURATION_MINUTES: Long = 10
    val USAGE_TICKER_INTERVAL_SECONDS: Long = 15
    val DAILY_OUTCOME_VALIDITY_MINUTES: Long = 30 // Check if outcome is from the last 30 mins
+   const val HOURS_IN_DAY = 24
+   const val MINUTES_IN_HOUR = 60
 
 
    // --- Usage Tracking Service ---
@@ -87,6 +94,10 @@ object Constants {
    const val FLEX_STAKES_MAX_LOSE = 40
    const val DEFAULT_FLEX_EARN_SLIDER = 5f
    const val DEFAULT_FLEX_LOSE_SLIDER = 20f
+
+
+   // --- Firestore Sync Worker ---
+   const val FIRESTORE_SYNC_BATCH_SIZE = 100
 
 
    // --- Misc UI ---

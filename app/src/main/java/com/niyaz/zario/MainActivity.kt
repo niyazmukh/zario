@@ -37,14 +37,9 @@ class MainActivity : ComponentActivity() {
 
         // --- Determine Start Destination ---
         val startDestination = if (auth.currentUser != null) {
-            // User is logged in, but also check if study state is valid (e.g., wasn't cleared unexpectedly)
-            // If user exists but local state is cleared, log them out for safety.
-            if (StudyStateManager.getUserId(this) == null) {
-                auth.signOut() // Sign out if local state missing despite auth user
-                Screen.AuthDecision.route // Go to login/register
-            } else {
-                Screen.Home.route // Go directly to home
-            }
+            // User is logged in - go to home screen
+            // HomeScreen will handle state restoration from Firestore if local state is missing
+            Screen.Home.route
         } else {
             Screen.AuthDecision.route // No user, go to login/register
         }

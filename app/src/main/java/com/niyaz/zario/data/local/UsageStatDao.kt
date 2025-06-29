@@ -108,6 +108,14 @@ interface UsageStatDao {
    suspend fun markUsageStatsAsSynced(ids: List<Long>)
 
 
+   /**
+    * Gets a Flow of the total usage duration for a specific app since the start of an interval.
+    * The Flow will automatically update when the usage_stats table changes.
+    */
+   @Query("SELECT SUM(durationMs) FROM usage_stats WHERE userId = :userId AND packageName = :packageName AND intervalStartTimestamp >= :intervalStartTimestamp")
+   fun getUsageForIntervalFlow(userId: String, packageName: String, intervalStartTimestamp: Long): Flow<Long?>
+
+
 }
 
 

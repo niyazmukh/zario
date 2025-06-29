@@ -7,15 +7,27 @@ import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.google.firebase.firestore.ktx.firestore
 import com.google.firebase.ktx.Firebase
-import com.niyaz.zario.StudyPhase
+import com.niyaz.zario.R
 import com.niyaz.zario.data.local.AppDatabase
 import com.niyaz.zario.utils.Constants
+import com.niyaz.zario.utils.StudyPhase
 import com.niyaz.zario.utils.StudyStateManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import java.util.Calendar
 import java.util.concurrent.TimeUnit
+import android.Manifest
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.core.app.ActivityCompat
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import com.niyaz.zario.MainActivity
 
 
 // Apply changes from <change> to the starter <code>
@@ -57,6 +69,7 @@ class DailyCheckWorker(appContext: Context, workerParams: WorkerParameters) :
 
 
                 // Get state needed for calculation
+                val studyStartTimestamp = StudyStateManager.getStudyStartTimestamp(applicationContext)
                 val condition = StudyStateManager.getCondition(applicationContext) ?: phase
                 val targetApp = StudyStateManager.getTargetApp(applicationContext)
                 val dailyGoalMs = StudyStateManager.getDailyGoalMs(applicationContext)
@@ -83,7 +96,28 @@ class DailyCheckWorker(appContext: Context, workerParams: WorkerParameters) :
 
 
                 // 1. Calculate Timestamps for Previous Interval
-                val (intervalStart, intervalEnd) = getPreviousIntervalTimestamps()
+                val (intervalStart, intervalEnd) = getPreviousEvaluationInterval(currentTime)
+
+                // If the worker runs at the very start of a new interval, there is no
+                // "previous" interval to check yet. In this case, we can just succeed.
+                if (intervalStart == null || intervalEnd == null) {
+                    Log.i(TAG, "Worker ran at the beginning of a new interval. No completed interval to check yet. Skipping.")
+                    return@withContext Result.success()
+                }
+
+                // --- ADDED: Check if this interval has already been processed ---
+                val lastCheckTime = StudyStateManager.getLastIntervalOutcome(applicationContext).first
+                if (lastCheckTime != null && lastCheckTime >= intervalEnd) {
+                    Log.w(TAG, "This interval (ending at $intervalEnd) has likely already been processed (last check at $lastCheckTime). Skipping to prevent double-counting.")
+                    return@withContext Result.success()
+                }
+                // --- END ADDED CHECK ---
+
+                // *** FIX: Adjust start time to respect the intervention start ***
+                // The query should not start before the study/intervention began.
+                // This prevents including usage from the baseline period in the first evaluation.
+                val actualStartTime = maxOf(intervalStart, studyStartTimestamp)
+                Log.d(TAG, "Original interval start: $intervalStart, Study start: $studyStartTimestamp, Using actual start: $actualStartTime")
 
 
                 // 2. Query Database for Previous Interval's Usage
@@ -91,17 +125,18 @@ class DailyCheckWorker(appContext: Context, workerParams: WorkerParameters) :
                 val totalUsageMs = dao.getTotalDurationForAppInRange(
                     userId = userId,
                     packageName = targetApp,
-                    startTime = intervalStart,
+                    startTime = actualStartTime, // *** USE THE CORRECTED START TIME ***
                     endTime = intervalEnd
                 ) ?: 0L
-                Log.i(TAG, "Previous interval ($intervalStart to $intervalEnd) total usage for $targetApp: ${totalUsageMs / 1000.0} seconds")
+                Log.i(TAG, "Previous interval (from $actualStartTime to $intervalEnd) total usage for $targetApp: ${totalUsageMs / 1000.0} seconds")
 
 
                 // 3. Compare Usage to Goal
                 // The goal is daily, so we must scale it to the interval
-                val intervalGoalMs = (dailyGoalMs.toDouble() / (24 * 60) * Constants.DAILY_CHECK_INTERVAL_MINUTES).toLong()
-                val goalReached = totalUsageMs <= intervalGoalMs
-                Log.i(TAG, "Interval goal ($intervalGoalMs ms): ${if(goalReached) "REACHED" else "MISSED"}")
+                val intervalDurationMinutes = TimeUnit.MILLISECONDS.toMinutes(intervalEnd - actualStartTime)
+                val dailyGoalScaledToInterval = (dailyGoalMs.toDouble() / (24 * 60) * intervalDurationMinutes).toLong()
+                val goalReached = totalUsageMs <= dailyGoalScaledToInterval
+                Log.i(TAG, "Interval Goal ($dailyGoalScaledToInterval ms for $intervalDurationMinutes mins): ${if(goalReached) "REACHED" else "MISSED"}")
 
 
                 // 4. Determine Points Change based on Condition
@@ -114,8 +149,8 @@ class DailyCheckWorker(appContext: Context, workerParams: WorkerParameters) :
                 Log.i(TAG, "Condition: $condition, Goal Reached: $goalReached -> Points change: $pointsChange, New Balance: $newPoints (Coerced)")
 
 
-                // --- ADDED: Save Daily Outcome ---
-                StudyStateManager.saveDailyOutcome(applicationContext, currentTime, goalReached, pointsChange)
+                // --- ALIGNMENT CHANGE: Save outcome with the END timestamp of the interval ---
+                StudyStateManager.saveIntervalOutcome(applicationContext, intervalEnd, goalReached, pointsChange)
                 // --- End Save Daily Outcome ---
 
 
@@ -126,6 +161,9 @@ class DailyCheckWorker(appContext: Context, workerParams: WorkerParameters) :
                 } else {
                     Log.d(TAG,"Points balance unchanged.")
                 }
+
+                // --- NEW: Show notification about the outcome ---
+                showPointsNotification(pointsChange, goalReached, newPoints)
 
 
                 Log.d(TAG, "Worker finished successfully.")
@@ -140,10 +178,105 @@ class DailyCheckWorker(appContext: Context, workerParams: WorkerParameters) :
     }
 
 
-    private fun getPreviousIntervalTimestamps(): Pair<Long, Long> {
-        val endTime = System.currentTimeMillis()
-        val startTime = endTime - TimeUnit.MINUTES.toMillis(Constants.DAILY_CHECK_INTERVAL_MINUTES)
-        return Pair(startTime, endTime)
+    /**
+     * Shows a notification to the user about the result of the last evaluation interval.
+     */
+    private fun showPointsNotification(pointsChange: Int, goalReached: Boolean, newPoints: Int) {
+        val notificationManager = NotificationManagerCompat.from(applicationContext)
+        createNotificationChannel(notificationManager)
+
+        val title = applicationContext.getString(R.string.notification_daily_feedback_title)
+        val pointsUnit = applicationContext.getString(R.string.points_unit)
+
+        val message = if (goalReached) {
+            applicationContext.getString(R.string.notification_daily_feedback_success, pointsChange, pointsUnit)
+        } else {
+            // Show loss as a positive number
+            applicationContext.getString(R.string.notification_daily_feedback_fail, -pointsChange, pointsUnit)
+        }
+        val fullMessage = message + " " + applicationContext.getString(R.string.notification_daily_feedback_balance_suffix, newPoints, pointsUnit)
+
+        val intent = Intent(applicationContext, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+        }
+
+        val pendingIntent: PendingIntent = PendingIntent.getActivity(
+            applicationContext,
+            Constants.USAGE_TRACKING_DAILY_FEEDBACK_NOTIF_ID,
+            intent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val notification = NotificationCompat.Builder(applicationContext, Constants.USAGE_TRACKING_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_tracking_notification)
+            .setContentTitle(title)
+            .setContentText(fullMessage)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(fullMessage))
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .build()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ActivityCompat.checkSelfPermission(applicationContext, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
+        {
+            Log.w(TAG, "Cannot show points notification: POST_NOTIFICATIONS permission not granted.")
+            return
+        }
+
+        notificationManager.notify(Constants.USAGE_TRACKING_DAILY_FEEDBACK_NOTIF_ID, notification)
+        Log.i(TAG, "Showing points feedback notification. Points change: $pointsChange")
+    }
+
+    /**
+     * Creates the notification channel for study updates, required for Android O and above.
+     */
+    private fun createNotificationChannel(notificationManager: NotificationManagerCompat) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channelName = applicationContext.getString(R.string.notification_channel_name)
+            val channelDescription = applicationContext.getString(R.string.notification_channel_description)
+            val channel = NotificationChannel(
+                Constants.USAGE_TRACKING_CHANNEL_ID,
+                channelName,
+                NotificationManager.IMPORTANCE_DEFAULT
+            ).apply {
+                description = channelDescription
+            }
+            notificationManager.createNotificationChannel(channel)
+        }
+    }
+
+
+    /**
+     * Calculates the start and end timestamps for the most recently completed evaluation interval.
+     * This ensures the worker evaluates fixed, non-overlapping time blocks.
+     *
+     * @param currentTime The current time used to determine which interval is the "previous" one.
+     * @return A Pair of (startTime, endTime) or (null, null) if no complete interval has passed.
+     */
+    private fun getPreviousEvaluationInterval(currentTime: Long): Pair<Long?, Long?> {
+        val intervalMinutes = Constants.DAILY_CHECK_INTERVAL_MINUTES
+        if (intervalMinutes <= 0) {
+            Log.e(TAG, "Daily check interval is zero or negative. Cannot determine interval.")
+            return Pair(null, null)
+        }
+        val intervalMillis = TimeUnit.MINUTES.toMillis(intervalMinutes)
+
+        // Calculate the end of the *current* interval slice
+        val currentIntervalEnd = (currentTime / intervalMillis + 1) * intervalMillis
+
+        // The previous interval is the one that ended right before the current one started
+        val previousIntervalEnd = currentIntervalEnd - intervalMillis
+        val previousIntervalStart = previousIntervalEnd - intervalMillis
+
+        // Sanity check: If the worker is running very early, the calculated start time
+        // might be in the future, which makes no sense. This can happen if the device
+        // time is unstable. We also don't evaluate an interval that hasn't fully passed.
+        if (previousIntervalStart > currentTime || previousIntervalEnd > currentTime) {
+            return Pair(null, null) // No completed interval to evaluate yet
+        }
+
+        return Pair(previousIntervalStart, previousIntervalEnd)
     }
 
 

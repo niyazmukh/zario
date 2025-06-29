@@ -1,7 +1,7 @@
 package com.niyaz.zario.data.repository
 
 
-import com.niyaz.zario.StudyPhase
+import com.niyaz.zario.utils.StudyPhase
 import com.niyaz.zario.data.local.AppUsageBaseline
 import com.niyaz.zario.data.local.BaselineUsageRecord
 import com.niyaz.zario.data.local.UsageStatEntity
@@ -54,8 +54,8 @@ interface StudyRepository {
    suspend fun saveFlexStakes(earn: Int, lose: Int) // Suspend for potential Firestore update
 
 
-   fun getLastDailyOutcome(): Triple<Long?, Boolean?, Int?>
-   suspend fun saveDailyOutcome(checkTimestamp: Long, goalReached: Boolean, pointsChange: Int) // Suspend for potential Firestore update
+   fun getLastIntervalOutcome(): Triple<Long?, Boolean?, Int?>
+   suspend fun saveIntervalOutcome(checkTimestamp: Long, goalReached: Boolean, pointsChange: Int) // Suspend for potential Firestore update
 
 
    suspend fun fetchAndSaveStateFromFirestore(userId: String): Boolean // Keep this high-level operation
@@ -77,7 +77,7 @@ interface StudyRepository {
    suspend fun getTotalDurationForAppInRange(userId: String, packageName: String, startTime: Long, endTime: Long): Long?
    fun getUsageStatsForDayFlow(userId: String, dayTimestamp: Long): Flow<List<UsageStatEntity>>
    fun getAggregatedDailyDurationForAppFlow(userId: String, packageName: String): Flow<List<com.niyaz.zario.data.local.DailyDuration>> // Use qualified name
-   fun getTodayUsageForAppFlow(userId: String, packageName: String, todayDayTimestamp: Long): Flow<Long?>
+   fun getUsageForIntervalFlow(userId: String, packageName: String, intervalStartTimestamp: Long): Flow<Long?>
    suspend fun getAggregatedUsageForBaseline(userId: String, startTime: Long, endTime: Long, minTotalDurationMs: Long = 60000): List<AppUsageBaseline>
    suspend fun getAllUsageRecordsForBaseline(userId: String, startTime: Long, endTime: Long): List<BaselineUsageRecord>
 

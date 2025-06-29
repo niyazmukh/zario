@@ -50,7 +50,7 @@ import com.google.firebase.auth.ktx.auth
 import com.google.firebase.firestore.ktx.firestore
 import com.google.firebase.ktx.Firebase
 import com.niyaz.zario.R
-import com.niyaz.zario.StudyPhase
+import com.niyaz.zario.utils.StudyPhase
 import com.niyaz.zario.data.local.AppDatabase
 import com.niyaz.zario.data.repository.StudyRepository
 import com.niyaz.zario.data.repository.StudyRepositoryImpl

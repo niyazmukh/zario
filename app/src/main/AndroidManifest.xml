@@ -31,6 +31,16 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
 
 
+    <!--
+    Required on Android 11 (API 30) and above to see other installed apps.
+    This allows the app to query for app names, icons, and other details.
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
 
 
     <application

@@ -6,7 +6,7 @@ import android.util.Log
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ktx.firestore
 import com.google.firebase.ktx.Firebase
-import com.niyaz.zario.StudyPhase
+import com.niyaz.zario.utils.StudyPhase
 import com.niyaz.zario.data.local.AppUsageBaseline
 import com.niyaz.zario.data.local.BaselineUsageRecord
 import com.niyaz.zario.data.local.DailyDuration // Keep original import if correct
@@ -198,13 +198,13 @@ class StudyRepositoryImpl(
     }
 
 
-    override fun getLastDailyOutcome(): Triple<Long?, Boolean?, Int?> = StudyStateManager.getLastDailyOutcome(context)
+    override fun getLastIntervalOutcome(): Triple<Long?, Boolean?, Int?> = StudyStateManager.getLastIntervalOutcome(context)
 
 
     // Saving outcome is purely local state for the next day's notification
-    override suspend fun saveDailyOutcome(checkTimestamp: Long, goalReached: Boolean, pointsChange: Int) {
+    override suspend fun saveIntervalOutcome(checkTimestamp: Long, goalReached: Boolean, pointsChange: Int) {
         withContext(Dispatchers.IO) {
-            StudyStateManager.saveDailyOutcome(context, checkTimestamp, goalReached, pointsChange)
+            StudyStateManager.saveIntervalOutcome(context, checkTimestamp, goalReached, pointsChange)
         }
     }
 
@@ -280,9 +280,9 @@ class StudyRepositoryImpl(
     }
 
 
-    override fun getTodayUsageForAppFlow(userId: String, packageName: String, todayDayTimestamp: Long): Flow<Long?> {
-        // Note: This is the crucial one for HomeViewModel's main display
-        return usageStatDao.getTodayUsageForAppFlow(userId, packageName, todayDayTimestamp) // Pass userId
+    override fun getUsageForIntervalFlow(userId: String, packageName: String, intervalStartTimestamp: Long): Flow<Long?> {
+        // The DAO method needs to be renamed here as well, but this fixes the repository layer
+        return usageStatDao.getUsageForIntervalFlow(userId, packageName, intervalStartTimestamp) // Pass userId
     }
 
 
@@ -380,9 +380,7 @@ class StudyRepositoryImpl(
             // Ensure other potentially relevant states are cleared/defaulted locally
             StudyStateManager.saveTargetApp(context, null)
             StudyStateManager.saveDailyGoalMs(context, null)
-            // Save default flex stakes locally even if not in flex condition initially
-            StudyStateManager.saveFlexStakes(context, Constants.FLEX_STAKES_MIN_EARN, Constants.FLEX_STAKES_MIN_LOSE)
-            StudyStateManager.saveDailyOutcome(context, 0L, false, 0) // Clear previous day outcome
+            StudyStateManager.saveIntervalOutcome(context, 0L, false, 0) // Clear previous day outcome
 
 
 
